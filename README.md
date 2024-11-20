@@ -49,7 +49,7 @@ Follow these steps to set up and run QuestGen on your local machine.
    - On Linux/MacOS:
 
      ```bash
-     source venv/bin/activate
+     source ve/bin/activate
      ```
 
    - On Windows:
