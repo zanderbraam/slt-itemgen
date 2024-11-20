@@ -55,7 +55,7 @@ Follow these steps to set up and run QuestGen on your local machine.
    - On Windows:
 
      ```bash
-     venv\Scripts\activate
+     ve\Scripts\activate
      ```
 
 5. **Upgrade `pip` to Version 24.3.1**:
