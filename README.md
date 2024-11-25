@@ -1,20 +1,20 @@
-# QuestGen
+# SLTItemGen
 
-**QuestGen** is a Streamlit app designed to generate custom question sets aimed at developing instruments for measuring the communicative participation outcomes of school-aged children (6 to 11 years old) with communication difficulties. This tool assists speech-language therapists (SLTs) and parents in assessing and understanding children's participation in social contexts where communication is essential.
+**SLTItemGen** is a Streamlit app designed to generate custom item sets aimed at developing instruments for measuring the communicative participation outcomes of school-aged children (6 to 11 years old) with communication difficulties. This tool assists speech-language therapists (SLTs) and parents in assessing and understanding children's participation in social contexts where communication is essential.
 
 ## Features
 
-- **Dynamic Question Generation**: Create sets of 10 questions tailored to specific communicative participation scenarios.
-- **User-Friendly Interface**: Utilize dropdown menus to select options and generate questions effortlessly.
+- **Dynamic Item Generation**: Create sets of 10 items tailored to specific communicative participation scenarios.
+- **User-Friendly Interface**: Utilize dropdown menus to select options and generate items effortlessly.
 - **Customizable Focus Areas**: Choose from various aspects of communication, such as verbal skills, non-verbal cues, social interaction, and understanding.
 
 ## Purpose
 
-The aim of QuestGen is to support the development of assessment instruments that measure how children with communication difficulties engage in life situations involving the exchange of knowledge, information, ideas, and feelings. By providing relevant and targeted questions, the app helps SLTs and parents evaluate and enhance the communicative participation of children in social and educational settings.
+The aim of SLTItemGen is to support the development of assessment instruments that measure how children with communication difficulties engage in life situations involving the exchange of knowledge, information, ideas, and feelings. By providing relevant and targeted items, the app helps SLTs and parents evaluate and enhance the communicative participation of children in social and educational settings.
 
 ## Getting Started
 
-Follow these steps to set up and run QuestGen on your local machine.
+Follow these steps to set up and run SLTItemGen on your local machine.
 
 ### Prerequisites
 
@@ -27,13 +27,13 @@ Follow these steps to set up and run QuestGen on your local machine.
 1. **Clone the Repository**:
 
    ```bash
-   git clone https://github.com/zanderbraam/questgen.git
+   git clone https://github.com/zanderbraam/slt-itemgen.git
    ```
 
 2. **Navigate to the Project Directory**:
 
    ```bash
-   cd questgen
+   cd slt-itemgen
    ```
 
 3. **Create a Virtual Environment**:
@@ -101,14 +101,14 @@ To run the app locally, you need to provide your OpenAI API key. Follow these st
 3. **Using the App Locally**:
 
    - **Select Options**: Use the dropdown menu to choose specific communication aspects you wish to focus on.
-   - **Generate Questions**: Click the 'Generate' button to produce a set of 10 tailored questions.
-   - **Review and Utilize**: Use the generated questions for assessment, therapy planning, or research purposes.
+   - **Generate Items**: Click the 'Generate' button to produce a set of 10 tailored items.
+   - **Review and Utilize**: Use the generated items for assessment, therapy planning, or research purposes.
 
 ### Using the Deployed Version
 
-You can access the deployed version of QuestGen using the following link:
+You can access the deployed version of SLTItemGen using the following link:
 
-[Access QuestGen Online](https://your-deployed-app-link.com)
+[Access SLTItemGen Online](https://your-deployed-app-link.com)
 
 *Note: Replace the above link with the actual URL after deployment.*
 
