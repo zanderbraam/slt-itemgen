@@ -50,7 +50,7 @@ specific_prompts = {
 
 
 def main():
-    st.title("QuestGen: Communicative Participation Question Generator")
+    st.title("SLTItemGen: Communicative Participation Item Generator")
     st.write("""
         Generate custom items aimed at measuring the communicative participation outcomes of children with communication difficulties.
         """)
@@ -131,7 +131,8 @@ def generate_questions(selected_option):
             f"{background_info}\n\n"
             f"{relevant_items}\n\n"
             f"{non_relevant_items}\n\n"
-            "Please generate items similar to the relevant examples and avoid items like the non-relevant examples."
+            "Please generate items similar to the relevant examples and avoid items like the non-relevant examples. "
+            "Only return the items!"
         )
 
         # Prepare messages for the API call
