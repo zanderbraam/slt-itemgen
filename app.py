@@ -1,6 +1,15 @@
+import os
+from dotenv import load_dotenv
 import streamlit as st
-# import openai  # Uncomment this when I have the API key
-# from dotenv import load_dotenv  # If you're using dotenv for environment variables
+from openai import OpenAI
+
+# Load environment variables from .env file
+load_dotenv()
+
+# Set OpenAI API key
+client = OpenAI(
+    api_key=os.getenv('OPENAI_API_KEY'),
+)
 
 
 def main():
@@ -22,30 +31,49 @@ def main():
     selected_option = st.selectbox("Select a focus area for the questions:", options)
 
     if st.button("Generate"):
-        generate_questions(selected_option)
+        with st.spinner('Generating questions...'):
+            questions = generate_questions(selected_option)
+            if questions:
+                st.subheader("Generated Questions:")
+                for question in questions:
+                    st.write("- " + question)
+            else:
+                st.error("An error occurred while generating questions. Please try again.")
 
 
 def generate_questions(selected_option):
-    # Placeholder for the actual API call
-    # Replace this code with OpenAI API call when I have the API key
+    try:
+        # Construct the prompt
+        prompt = (
+            f"Generate 10 assessment questions aimed at measuring {selected_option.lower()} "
+            f"for children aged 6 to 11 with communication difficulties. "
+            "The questions should be appropriate for speech-language therapists and parents to use."
+        )
 
-    # Dummy questions for demonstration purposes
-    dummy_questions = [
-        f"Question 1 about {selected_option}",
-        f"Question 2 about {selected_option}",
-        f"Question 3 about {selected_option}",
-        f"Question 4 about {selected_option}",
-        f"Question 5 about {selected_option}",
-        f"Question 6 about {selected_option}",
-        f"Question 7 about {selected_option}",
-        f"Question 8 about {selected_option}",
-        f"Question 9 about {selected_option}",
-        f"Question 10 about {selected_option}",
-    ]
+        # Call the OpenAI API
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": "You are an expert in child speech and language therapy."},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=500,
+            n=1,
+            temperature=0.7,
+        )
 
-    st.subheader("Generated Questions:")
-    for question in dummy_questions:
-        st.write("- " + question)
+        # Extract the generated text
+        generated_text = response.choices[0].message.content.strip()
+
+        # Split the text into individual questions
+        questions = [q.strip() for q in generated_text.split('\n') if q.strip()]
+
+        return questions
+
+    except Exception as e:
+        # Handle exceptions (e.g., API errors)
+        st.error(f"An error occurred: {e}")
+        return None
 
 
 if __name__ == "__main__":
