@@ -70,17 +70,47 @@ Follow these steps to set up and run QuestGen on your local machine.
    pip install -r requirements.txt
    ```
 
-7. **Run the App**:
+### Local Testing
+
+To run the app locally, you need to provide your OpenAI API key. Follow these steps:
+
+1. **Set Up Environment Variables**:
+
+   Create a `.env` file in the root directory of the project to securely store your OpenAI API key.
+
+   ```bash
+   touch .env
+   ```
+
+   Add the following line to your `.env` file:
+
+   ```env
+   OPENAI_API_KEY=your_openai_api_key_here
+   ```
+
+   Replace `your_openai_api_key_here` with your actual OpenAI API key.
+
+   > **Note:** Ensure that your `.env` file is included in your `.gitignore` to prevent it from being committed to version control.
+
+2. **Run the App**:
 
    ```bash
    streamlit run app.py
    ```
 
-## How to Use
+3. **Using the App Locally**:
 
-- **Select Options**: Use the dropdown menu to choose specific communication aspects you wish to focus on.
-- **Generate Questions**: Click the 'Generate' button to produce a set of 10 tailored questions.
-- **Review and Utilize**: Use the generated questions for assessment, therapy planning, or research purposes.
+   - **Select Options**: Use the dropdown menu to choose specific communication aspects you wish to focus on.
+   - **Generate Questions**: Click the 'Generate' button to produce a set of 10 tailored questions.
+   - **Review and Utilize**: Use the generated questions for assessment, therapy planning, or research purposes.
+
+### Using the Deployed Version
+
+You can access the deployed version of QuestGen using the following link:
+
+[Access QuestGen Online](https://your-deployed-app-link.com)
+
+*Note: Replace the above link with the actual URL after deployment.*
 
 ## Contributing
 
