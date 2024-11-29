@@ -103,7 +103,7 @@ To run the app locally, you need to provide your OpenAI API key. Follow these st
 
 You can access the deployed version of SLTItemGen using the following link:
 
-[Access SLTItemGen Online](https://your-deployed-app-link.com)
+[Access SLTItemGen Online](https://slt-itemgen-5zchlgcr2tm7hkvqddcxam.streamlit.app/)
 
 ## Contributing
 
