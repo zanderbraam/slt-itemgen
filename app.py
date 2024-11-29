@@ -7,25 +7,34 @@ from openai import OpenAI
 
 def load_local_secrets():
     """Load secrets from secrets.toml for local testing."""
-    if os.getenv('STREAMLIT_ENV') != 'cloud':
-        try:
-            secrets = toml.load("secrets.toml")["default"]
-            for key, value in secrets.items():
-                os.environ[key] = value  # Set environment variables
-        except FileNotFoundError:
-            print("secrets.toml file not found. Ensure it exists for local testing.")
-        except KeyError:
-            print("Invalid format in secrets.toml. Ensure [default] section is present.")
+    try:
+        secrets = toml.load("secrets.toml")["default"]
+        for key, value in secrets.items():
+            os.environ[key] = value  # Set environment variables
+    except FileNotFoundError:
+        print("secrets.toml file not found. Ensure it exists for local testing.")
+    except KeyError:
+        print("Invalid format in secrets.toml. Ensure [default] section is present.")
 
 
-# Check if `st.secrets` contains the OpenAI API key
-if "OPENAI_API_KEY" in st.secrets:
-    # Running on Streamlit Cloud
-    api_key = st.secrets["OPENAI_API_KEY"]
-else:
-    # Running locally
+# Try loading local secrets first
+try:
     load_local_secrets()
-    api_key = os.getenv('OPENAI_API_KEY')
+    api_key = os.getenv("OPENAI_API_KEY")
+except Exception as e:
+    print(f"Local secrets loading failed: {e}")
+    api_key = None
+
+# If no local API key, fall back to Streamlit secrets
+if not api_key:
+    try:
+        api_key = st.secrets["OPENAI_API_KEY"]
+    except FileNotFoundError:
+        raise ValueError("No API key found. Add it to secrets.toml for local use or Streamlit secrets for deployment.")
+
+# Ensure the API key is set
+if not api_key:
+    raise ValueError("OPENAI_API_KEY is not set. Check your secrets.toml or Streamlit secrets.")
 
 # Set OpenAI API key
 client = OpenAI(
