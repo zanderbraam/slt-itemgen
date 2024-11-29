@@ -9,6 +9,9 @@ __pycache__/
 # Ignore environment files
 .env
 
+# Ignore local secrets files
+secrets.toml
+
 # Distribution / packaging
 .Python
 build/

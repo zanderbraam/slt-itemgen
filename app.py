@@ -1,16 +1,32 @@
 import os
+import toml
 
 import streamlit as st
 from openai import OpenAI
 
-# Load .env file only when running locally
-if os.getenv('STREAMLIT_ENV') != 'cloud':
-    from dotenv import load_dotenv
-    load_dotenv()
+
+def load_local_secrets():
+    """Load secrets from secrets.toml for local testing."""
+    if os.getenv('STREAMLIT_ENV') != 'cloud':
+        try:
+            secrets = toml.load("secrets.toml")["default"]
+            for key, value in secrets.items():
+                os.environ[key] = value  # Set environment variables
+        except FileNotFoundError:
+            print("secrets.toml file not found. Ensure it exists for local testing.")
+        except KeyError:
+            print("Invalid format in secrets.toml. Ensure [default] section is present.")
+
+
+# Load secrets if running locally
+load_local_secrets()
+
+# Access the API key
+api_key = os.getenv('OPENAI_API_KEY')
 
 # Set OpenAI API key
 client = OpenAI(
-    api_key=os.getenv('OPENAI_API_KEY'),
+    api_key=api_key,
 )
 
 # Options and specific prompts

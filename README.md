@@ -74,23 +74,18 @@ Follow these steps to set up and run SLTItemGen on your local machine.
 
 To run the app locally, you need to provide your OpenAI API key. Follow these steps:
 
-1. **Set Up Environment Variables**:
+1. **Set Up a `secrets.toml` File**:
 
-   Create a `.env` file in the root directory of the project to securely store your OpenAI API key.
+   Create a `secrets.toml` file in the root directory of the project. Add your API key in the following format:
 
-   ```bash
-   touch .env
+   ```toml
+   [default]
+   OPENAI_API_KEY = "your_openai_api_key_here"
    ```
 
-   Add the following line to your `.env` file:
+   Replace `"your_openai_api_key_here"` with your actual OpenAI API key.
 
-   ```env
-   OPENAI_API_KEY=your_openai_api_key_here
-   ```
-
-   Replace `your_openai_api_key_here` with your actual OpenAI API key.
-
-   > **Note:** Ensure that your `.env` file is included in your `.gitignore` to prevent it from being committed to version control.
+   > **Note:** Ensure that your `secrets.toml` file is included in your `.gitignore` to prevent it from being committed to version control.
 
 2. **Run the App**:
 
@@ -109,8 +104,6 @@ To run the app locally, you need to provide your OpenAI API key. Follow these st
 You can access the deployed version of SLTItemGen using the following link:
 
 [Access SLTItemGen Online](https://your-deployed-app-link.com)
-
-*Note: Replace the above link with the actual URL after deployment.*
 
 ## Contributing
 
