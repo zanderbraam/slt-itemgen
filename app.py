@@ -57,9 +57,22 @@ def main():
 
     selected_option = st.selectbox("Select a focus area for the items:", options)
 
+    temperature = st.slider(
+        "Select model creativity (temperature):",
+        min_value=0.0,
+        max_value=1.0,
+        value=0.7,  # Default value
+        step=0.1,
+        help=(
+            "Temperature controls the creativity of the generated items. "
+            "Lower values (e.g., 0.0) make the output more focused and deterministic, "
+            "while higher values (e.g., 1.0) increase creativity and randomness."
+        ),
+    )
+
     if st.button("Generate"):
         with st.spinner('Generating items...'):
-            items = generate_questions(selected_option)
+            items = generate_questions(selected_option, temperature)
             if items:
                 st.subheader("Generated Items:")
                 for item in items:
@@ -68,7 +81,7 @@ def main():
                 st.error("An error occurred while generating items. Please try again.")
 
 
-def generate_questions(selected_option):
+def generate_questions(selected_option, temperature):
     try:
         # Retrieve the specific prompt based on the selected option
         specific_prompt = specific_prompts[selected_option]
@@ -145,9 +158,9 @@ def generate_questions(selected_option):
         response = client.chat.completions.create(
             model="gpt-4o",  # Replace with "gpt-3.5-turbo" if needed
             messages=messages,
-            max_tokens=1000,
+            max_tokens=10000,
             n=1,
-            temperature=0.7,
+            temperature=temperature,
         )
 
         # Extract the generated text
