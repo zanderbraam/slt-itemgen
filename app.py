@@ -18,11 +18,14 @@ def load_local_secrets():
             print("Invalid format in secrets.toml. Ensure [default] section is present.")
 
 
-# Load secrets if running locally
-load_local_secrets()
-
-# Access the API key
-api_key = os.getenv('OPENAI_API_KEY')
+# Check if `st.secrets` contains the OpenAI API key
+if "OPENAI_API_KEY" in st.secrets:
+    # Running on Streamlit Cloud
+    api_key = st.secrets["OPENAI_API_KEY"]
+else:
+    # Running locally
+    load_local_secrets()
+    api_key = os.getenv('OPENAI_API_KEY')
 
 # Set OpenAI API key
 client = OpenAI(
