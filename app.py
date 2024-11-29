@@ -1,10 +1,12 @@
 import os
-from dotenv import load_dotenv
+
 import streamlit as st
 from openai import OpenAI
 
-# Load environment variables from .env file
-load_dotenv()
+# Load .env file only when running locally
+if os.getenv('STREAMLIT_ENV') != 'cloud':
+    from dotenv import load_dotenv
+    load_dotenv()
 
 # Set OpenAI API key
 client = OpenAI(
