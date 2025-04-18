@@ -81,8 +81,8 @@ graph TD
 - [x] Update `generate_items` to handle custom examples & forbidden words
 
 ### Phase 2 — Embedding Service
-- [ ] Wrap OpenAI embeddings with local caching (`sqlite` or `joblib`)
-- [ ] Build sparse vs. dense matrices; L2‑norm & pruning threshold slider
+- [x] Wrap OpenAI embeddings with local caching (`joblib`) (for dense embeddings)
+- [x] Build dense matrices (OpenAI) & sparse matrices (TF-IDF); ~~L2‑norm & pruning~~ (TF-IDF handles sparsity)
 - [ ] Unit‑test deterministic caching & shape consistency
 
 ### Phase 3 — Exploratory Graph Analysis

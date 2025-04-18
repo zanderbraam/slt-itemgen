@@ -42,4 +42,33 @@
     *   Implemented filtering of generated items based on forbidden words list (case-insensitive regex).
     *   Improved error logging with `traceback.format_exc()`.
 *   Added `import re` to `app.py`.
-*   Updated `PROJECTPLAN.md` to include and mark new Phase 1 tasks as complete. 
+*   Updated `PROJECTPLAN.md` to include and mark new Phase 1 tasks as complete.
+*   Fixed bug: Refined item parsing logic in `generate_items` using regex (`re.match`) to reliably remove LLM-generated list markers and prevent double indexing in the UI display.
+
+## [Date TBD] - Phase 2: Embedding Service Implementation
+
+*   Created `src/` directory and `src/__init__.py`.
+*   Created `src/embedding_service.py`:
+    *   Implemented initial `get_embeddings` function to fetch dense and sparse embeddings from OpenAI (`text-embedding-3-small`).
+    *   Added `joblib` caching (`@memory.cache`) to `_fetch_embeddings_from_api` to avoid redundant API calls.
+    *   Refactored caching (`PicklingError` fix): Moved OpenAI client instantiation inside the cached function (`_fetch_embeddings_from_api`) to prevent passing the unpickleable client object as an argument.
+*   Integrated into `app.py`:
+    *   Added "Generate Embeddings" button and section.
+    *   Used `st.session_state` to store `dense_embeddings` and `sparse_embeddings`.
+    *   Added `st.metric` to display embedding status (shape/count).
+    *   Updated "Clear History" to also clear embeddings.
+*   Refactored prompting logic:
+    *   Created `src/prompting.py`.
+    *   Moved `DEFAULT_POSITIVE_EXAMPLES`, `DEFAULT_NEGATIVE_EXAMPLES`, and prompt/parsing/filtering functions from `app.py` to `src/prompting.py`.
+    *   Updated `app.py` imports to use `src.prompting`.
+*   Revised embedding strategy based on API limitations:
+    *   Discovered OpenAI API (`v1.x`) does not directly return sparse embeddings as initially assumed (or capability was removed/changed).
+    *   Refactored `src/embedding_service.py`:
+        *   Renamed `get_embeddings` to `get_dense_embeddings`, focusing only on OpenAI dense vectors.
+        *   Added `get_sparse_embeddings_tfidf` function using `sklearn.feature_extraction.text.TfidfVectorizer` for local sparse embedding generation.
+        *   Added `scikit-learn` and `scipy` imports.
+    *   Updated `app.py`:
+        *   Imported new embedding functions.
+        *   Renamed session state to `sparse_embeddings_tfidf`.
+        *   Split UI section 4 into "4.1 Dense Embeddings (OpenAI)" and "4.2 Sparse Embeddings (TF-IDF)" with separate buttons and status displays.
+*   Updated `PROJECTPLAN.md` to reflect TF-IDF approach for sparse embeddings and marked relevant Phase 2 tasks as complete. 

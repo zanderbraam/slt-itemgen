@@ -42,6 +42,9 @@ MANIFEST
 pip-log.txt
 pip-delete-this-directory.txt
 
+# Embedding cache
+cache/
+
 # Unit test / coverage reports
 htmlcov/
 .tox/
