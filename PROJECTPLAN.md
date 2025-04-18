@@ -90,9 +90,9 @@ graph TD
 - [x] Implement TMFG network constructor (likely using `networkx` and algorithms adapted for TMFG)
 - [x] Implement EBICglasso variant (using `sklearn.covariance.graphical_lasso` or `graphical_lassoCV`)
 - [x] Implement Walktrap community detection (using `python-igraph`)
-- [ ] Calculate network fit metrics: TEFI & NMI
+- [x] Calculate network fit metrics: TEFI & NMI (TEFI implemented; NMI placeholder for Phase 5/6)
 - [x] UI: Add radio buttons for selecting network type (TMFG/EBICglasso)
-- [x] UI: Display real-time metrics (TEFI, NMI, number of communities)
+- [x] UI: Display real-time metrics (TEFI, NMI, number of communities) (TEFI displayed; NMI shows N/A)
 - [x] Plot: Implement interactive network visualization (e.g., `pyvis` or `plotly`) showing items colored by detected community
 
 ### Phase 4 — Unique Variable Analysis

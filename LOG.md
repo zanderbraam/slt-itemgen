@@ -155,4 +155,21 @@
 *   Added UI toggle (radio buttons) in `app.py` to show/hide item numbers (node labels) on the network graph:
     *   Added `show_network_labels` to session state.
     *   Updated plotting functions (`plot_network_with_communities` and basic `nx.draw`) to respect the toggle.
-    *   Labels show extracted item number (e.g., "1" instead of "Item 1") when visible. 
+    *   Labels show extracted item number (e.g., "1" instead of "Item 1") when visible.
+
+## [Date TBD] - Phase 3 Completion: TEFI Calculation
+
+*   Implemented `calculate_tefi` function in `src/ega_service.py`:
+    *   Calculates a TEFI variant based on the standardized difference between average within-community and between-community similarities.
+    *   Takes the similarity matrix and community membership dictionary as input.
+    *   Handles potential errors and edge cases (e.g., < 2 communities, isolated nodes).
+    *   Added basic test cases to `__main__` block.
+*   Added placeholder `calculate_nmi` function in `src/ega_service.py`:
+    *   Includes basic structure and checks for future implementation.
+    *   Currently returns `np.nan` or raises `NotImplementedError` as NMI comparison requires a second clustering (handled in Phase 5/6).
+*   Integrated TEFI calculation into `app.py` (Section 6):
+    *   Added session state variables (`tefi_*_*`).
+    *   `calculate_tefi` is called after successful community detection.
+    *   Added a new metric display column for TEFI.
+    *   NMI metric display shows "N/A" placeholder.
+    *   Updated "Clear Item History" to reset TEFI state. 

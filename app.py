@@ -20,7 +20,13 @@ from src.prompting import (
     filter_unique_items
 )
 from src.embedding_service import get_dense_embeddings, get_sparse_embeddings_tfidf, memory
-from src.ega_service import calculate_similarity_matrix, construct_tmfg_network, construct_ebicglasso_network, detect_communities_walktrap
+from src.ega_service import (
+    calculate_similarity_matrix,
+    construct_tmfg_network,
+    construct_ebicglasso_network,
+    detect_communities_walktrap,
+    calculate_tefi
+)
 
 # Attempt to import optional igraph for community detection
 try:
@@ -314,6 +320,16 @@ def main():
     if "show_network_labels" not in st.session_state:
         st.session_state.show_network_labels = False # Default to False (Hide)
 
+    # Add session state for TEFI results
+    if "tefi_tmfg_dense" not in st.session_state:
+        st.session_state.tefi_tmfg_dense = None
+    if "tefi_tmfg_sparse" not in st.session_state:
+        st.session_state.tefi_tmfg_sparse = None
+    if "tefi_glasso_dense" not in st.session_state:
+        st.session_state.tefi_glasso_dense = None
+    if "tefi_glasso_sparse" not in st.session_state:
+        st.session_state.tefi_glasso_sparse = None
+
     col1, col2 = st.columns([1, 1])
     with col1:
         if st.button("Generate New Items", type="primary"):
@@ -361,6 +377,11 @@ def main():
             st.session_state.modularity_glasso_dense = None
             st.session_state.communities_glasso_sparse = None
             st.session_state.modularity_glasso_sparse = None
+            # Clear TEFI results
+            st.session_state.tefi_tmfg_dense = None
+            st.session_state.tefi_tmfg_sparse = None
+            st.session_state.tefi_glasso_dense = None
+            st.session_state.tefi_glasso_sparse = None
             # Clear label visibility toggle
             st.session_state.show_network_labels = False
 
@@ -531,6 +552,7 @@ def main():
         graph_state_key = f"{method_prefix}_graph_{matrix_suffix}"
         community_membership_key = f"communities_{method_prefix}_{matrix_suffix}"
         modularity_key = f"modularity_{method_prefix}_{matrix_suffix}"
+        tefi_key = f"tefi_{method_prefix}_{matrix_suffix}" # Key for TEFI results
 
         # --- Construct Network Button and Logic ---
         disable_construct_button = selected_sim_matrix is None
@@ -600,9 +622,10 @@ def main():
         current_graph = st.session_state.get(graph_state_key)
         current_communities = st.session_state.get(community_membership_key)
         current_modularity = st.session_state.get(modularity_key)
+        current_tefi = st.session_state.get(tefi_key) # Get current TEFI score
 
         if current_graph is not None:
-            col_stat1, col_stat2, col_stat3 = st.columns(3) # Add column for modularity
+            col_stat1, col_stat2, col_stat3, col_stat4 = st.columns(4) # Add column for TEFI/NMI
             with col_stat1:
                 st.metric(f"{network_method} Graph", "Constructed",
                           f"{current_graph.number_of_nodes()} Nodes, {current_graph.number_of_edges()} Edges")
@@ -617,6 +640,12 @@ def main():
                      st.metric("Modularity", f"{current_modularity:.4f}", delta=None) # Removed delta
                 else:
                      st.metric("Modularity", "-", "-")
+            with col_stat4:
+                if current_tefi is not None:
+                     st.metric("TEFI", f"{current_tefi:.4f}")
+                else:
+                    # NMI cannot be calculated yet
+                    st.metric("TEFI / NMI", "N/A", "Requires communities")
 
 
             # --- Detect Communities Button ---
@@ -628,9 +657,30 @@ def main():
                             current_graph,
                             weights='weight' # Assuming edges have 'weight' attribute
                         )
-                        st.session_state[community_membership_key] = membership_dict
-                        st.session_state[modularity_key] = clustering.modularity # Store modularity
-                        st.success(f"Walktrap detected {len(set(membership_dict.values()))} communities.")
+                        # Check if communities were successfully detected
+                        if membership_dict is not None and clustering is not None:
+                            st.session_state[community_membership_key] = membership_dict
+                            st.session_state[modularity_key] = clustering.modularity # Store modularity
+
+                            # Now calculate TEFI using the result and the original similarity matrix
+                            try:
+                                tefi_score = calculate_tefi(selected_sim_matrix, membership_dict)
+                                st.session_state[tefi_key] = tefi_score
+                                st.success(f"Walktrap detected {len(set(m for m in membership_dict.values() if m != -1))} communities. TEFI calculated: {tefi_score:.4f}")
+                            except ValueError as ve:
+                                st.error(f"Error calculating TEFI: {ve}")
+                                st.session_state[tefi_key] = None # Reset TEFI state on error
+                            except Exception as e_tefi:
+                                st.error(f"An unexpected error occurred during TEFI calculation: {e_tefi}")
+                                st.session_state[tefi_key] = None # Reset TEFI state on error
+                                st.code(traceback.format_exc())
+                        else:
+                            # Handle case where walktrap returns None (e.g., no positive strength nodes)
+                            st.session_state[community_membership_key] = membership_dict # Store potentially partial results (only -1s)
+                            st.session_state[modularity_key] = None
+                            st.session_state[tefi_key] = None
+                            st.warning("Walktrap completed, but no valid communities found or modularity could not be calculated. TEFI cannot be calculated.")
+
                         st.rerun() # Rerun to update metrics and plot color
                     except ImportError:
                         st.error("`python-igraph` library not found. Please install it (`pip install python-igraph`).")

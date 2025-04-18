@@ -472,7 +472,157 @@ def detect_communities_walktrap(
         raise RuntimeError(f"An unexpected error occurred during Walktrap community detection: {e}") from e
 
 
-# TODO: Calculate network fit metrics (TEFI & NMI)
+def calculate_tefi(similarity_matrix: np.ndarray, membership: dict[str | int, int]) -> float:
+    """Calculates the Total Entropy Fit Index (TEFI) variant.
+
+    This variant calculates the standardized difference between the average
+    within-community similarity and the average between-community similarity.
+    Higher values indicate better fit, meaning communities group items that are
+    more similar to each other than to items in other communities.
+
+    Args:
+        similarity_matrix: The original (n_items, n_items) similarity matrix.
+        membership: A dictionary mapping node IDs (matching matrix indices/labels if applicable)
+                    to community IDs. Assumes community IDs are integers, potentially including -1
+                    for isolated nodes which are ignored in this calculation.
+
+    Returns:
+        The TEFI score (float). Returns np.nan if calculation is not possible
+        (e.g., no within/between edges found, requires >1 community).
+
+    Raises:
+        ValueError: If the dimensions of the matrix and membership seem inconsistent
+                    or if node IDs in membership don't correspond to matrix indices.
+    """
+    n_items = similarity_matrix.shape[0]
+    if n_items == 0:
+        return np.nan
+
+    # Assume membership keys correspond to matrix indices 0 to n-1
+    # If item_labels were used, mapping might be needed, but app.py passes
+    # membership keys matching the original item order/labels.
+    # We need to map node IDs (potentially strings like "Item 1") to matrix indices (0..n-1).
+    # Let's create the index mapping based on the order in membership keys if needed,
+    # assuming the similarity matrix rows/cols correspond to the item order.
+
+    # Get unique, valid community IDs (exclude -1 for isolated nodes)
+    valid_communities = {cid for cid in membership.values() if cid != -1}
+    if len(valid_communities) < 2:
+        # Need at least two communities to compare within vs. between
+        # Or if all nodes are isolated (-1)
+        print("Warning: TEFI requires at least 2 valid communities. Returning NaN.")
+        return np.nan
+
+    within_community_similarities = []
+    between_community_similarities = []
+
+    # Create a mapping from node ID (key in membership) to its 0-based index
+    # Assumes the order of items in similarity_matrix matches the order they were added
+    # which corresponds to the keys in membership (if generated from item_labels)
+    node_list = list(membership.keys()) # Get node IDs in a fixed order
+    node_to_index = {node_id: i for i, node_id in enumerate(node_list)}
+
+    if len(node_to_index) != n_items:
+        raise ValueError(f"Mismatch between number of items in membership ({len(node_to_index)}) "
+                         f"and similarity matrix dimension ({n_items}).")
+
+    # Iterate through unique pairs of nodes (upper triangle of similarity matrix)
+    for i_idx in range(n_items):
+        node_i = node_list[i_idx]
+        comm_i = membership.get(node_i)
+        if comm_i == -1: # Skip isolated nodes
+            continue
+
+        for j_idx in range(i_idx + 1, n_items):
+            node_j = node_list[j_idx]
+            comm_j = membership.get(node_j)
+            if comm_j == -1: # Skip isolated nodes
+                continue
+
+            similarity = similarity_matrix[i_idx, j_idx]
+
+            if comm_i == comm_j:
+                within_community_similarities.append(similarity)
+            else:
+                between_community_similarities.append(similarity)
+
+    # Calculate averages
+    avg_within = np.mean(within_community_similarities) if within_community_similarities else np.nan
+    avg_between = np.mean(between_community_similarities) if between_community_similarities else np.nan
+
+    if np.isnan(avg_within) or np.isnan(avg_between):
+        print("Warning: Could not calculate average within or between similarities (perhaps only one community?). Returning NaN for TEFI.")
+        return np.nan
+
+    # Calculate global standard deviation of off-diagonal similarities used in calculation
+    all_relevant_similarities = within_community_similarities + between_community_similarities
+    if not all_relevant_similarities or len(all_relevant_similarities) < 2:
+         print("Warning: Not enough similarity values to calculate standard deviation. Returning NaN for TEFI.")
+         return np.nan
+
+    global_std_dev = np.std(all_relevant_similarities)
+
+    if global_std_dev < 1e-9: # Avoid division by zero or near-zero std dev
+        print("Warning: Global standard deviation of similarities is near zero. Returning NaN for TEFI.")
+        return np.nan
+
+    tefi_score = (avg_within - avg_between) / global_std_dev
+
+    return tefi_score
+
+
+# --- Placeholder for NMI --- #
+def calculate_nmi(membership1: dict[str | int, int], membership2: dict[str | int, int]) -> float:
+    """Calculates the Normalized Mutual Information (NMI) between two community structures.
+
+    Requires two membership dictionaries (mapping node ID to community ID) for the same set of nodes.
+
+    Args:
+        membership1: The first membership dictionary.
+        membership2: The second membership dictionary.
+
+    Returns:
+        The NMI score (float between 0 and 1).
+
+    Raises:
+        NotImplementedError: As NMI calculation between different structures
+                           is intended for later phases (e.g., Phase 5).
+        ValueError: If the node sets in the two memberships differ.
+        ImportError: If scikit-learn is not installed.
+    """
+    # NMI calculation will be implemented properly in Phase 5/6 when needed.
+    # For now, raise error or return NaN to indicate it's not applicable yet.
+    # raise NotImplementedError("NMI calculation requires two community structures, typically calculated in Phase 5 or 6.")
+
+    # --- OR --- Return NaN as a placeholder that can be handled in the UI
+    # Check if scikit-learn is available for the eventual implementation
+    try:
+        from sklearn.metrics import normalized_mutual_info_score
+    except ImportError:
+         print("Warning: scikit-learn not installed. NMI calculation will not be possible.")
+         return np.nan # Cannot calculate NMI without sklearn
+
+    # Basic check: Do memberships cover the same nodes?
+    nodes1 = set(membership1.keys())
+    nodes2 = set(membership2.keys())
+    if nodes1 != nodes2:
+        raise ValueError("Node sets in the two membership dictionaries must be identical for NMI calculation.")
+
+    if not nodes1: # Handle empty memberships
+        return 1.0 if not nodes2 else 0.0 # NMI is 1 if both are empty, 0 if one is empty
+
+    # Ensure consistent node ordering for label lists
+    ordered_nodes = sorted(list(nodes1))
+    labels1 = [membership1[node] for node in ordered_nodes]
+    labels2 = [membership2[node] for node in ordered_nodes]
+
+    # Calculate NMI
+    # Use average_method='arithmetic' as is common
+    nmi_score = normalized_mutual_info_score(labels1, labels2, average_method='arithmetic')
+    return nmi_score
+
+
+# TODO: Further testing for TEFI and NMI in __main__
 
 if __name__ == '__main__':
     # Example Usage & Basic Test Cases
@@ -627,5 +777,52 @@ if __name__ == '__main__':
             print(f"  Error during Walktrap detection - Likely missing weights (Glasso): {e}")
 
     print("\nCommunity detection tests complete (if igraph installed and graphs generated).")
+
+    print("\nAll basic tests passed.")
+
+    print("\n--- Testing TEFI Calculation ---")
+    # Example based on the TMFG test case
+    sim_matrix_tefi = np.array([
+        [1.0, 0.8, 0.1, 0.6], # A
+        [0.8, 1.0, 0.7, 0.2], # B
+        [0.1, 0.7, 1.0, 0.5], # C
+        [0.6, 0.2, 0.5, 1.0]  # D
+    ])
+    # Hypothetical community structures
+    membership_good = {'A': 0, 'B': 0, 'C': 1, 'D': 1}
+    membership_bad = {'A': 0, 'B': 1, 'C': 0, 'D': 1}
+    membership_single = {'A': 0, 'B': 0, 'C': 0, 'D': 0}
+    membership_isolated = {'A': 0, 'B': 0, 'C': 1, 'D': -1} # Node D is isolated
+
+    tefi_good = calculate_tefi(sim_matrix_tefi, membership_good)
+    print(f"TEFI (Good Structure {membership_good}): {tefi_good:.4f}")
+    # Expected: High similarity within {A,B} (0.8) and {C,D} (0.5).
+    # Low similarity between {(A,C)=0.1, (A,D)=0.6, (B,C)=0.7, (B,D)=0.2}. AvgWithin > AvgBetween.
+
+    tefi_bad = calculate_tefi(sim_matrix_tefi, membership_bad)
+    print(f"TEFI (Bad Structure {membership_bad}): {tefi_bad:.4f}")
+    # Expected: Lower TEFI than good structure.
+
+    tefi_single = calculate_tefi(sim_matrix_tefi, membership_single)
+    print(f"TEFI (Single Community {membership_single}): {tefi_single}") # Expected: nan
+
+    tefi_isolated = calculate_tefi(sim_matrix_tefi, membership_isolated)
+    print(f"TEFI (With Isolated Node {membership_isolated}): {tefi_isolated:.4f}")
+    # Expected: Calculation ignores node D. Should be based on A,B,C.
+
+    # Example NMI test (requires two structures)
+    print("\n--- Testing NMI Calculation (Placeholder) ---")
+    try:
+        nmi_score = calculate_nmi(membership_good, membership_bad)
+        print(f"NMI between {membership_good} and {membership_bad}: {nmi_score:.4f}")
+        nmi_perfect = calculate_nmi(membership_good, membership_good)
+        print(f"NMI between {membership_good} and itself: {nmi_perfect:.4f}")
+        assert np.isclose(nmi_perfect, 1.0)
+    except NotImplementedError as e:
+        print(f"Caught expected error for NMI: {e}")
+    except ImportError:
+        print("Skipping NMI test: scikit-learn not installed.")
+    except ValueError as e:
+         print(f"Error during NMI test: {e}")
 
     print("\nAll basic tests passed.") 
