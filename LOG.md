@@ -188,4 +188,24 @@
         *   Clears all downstream state variables (embeddings, matrices, graphs, communities, metrics) to ensure subsequent steps use the confirmed items.
         *   Disables the text area and generation/clearing buttons once confirmed.
     *   Renamed "Clear Item History" to "Clear Item History & Start Over" and updated it to reset `item_pool_text` and `items_confirmed` state as well.
-    *   Updated subsequent sections (4, 5, 6) to be conditional on `st.session_state.items_confirmed == True`. 
+    *   Updated subsequent sections (4, 5, 6) to be conditional on `st.session_state.items_confirmed == True`.
+
+## [Date TBD] - Phase 4: Initial UVA Implementation
+
+*   Implemented `calculate_wto` function in `src/ega_service.py`:
+    *   Calculates the Weighted Topological Overlap matrix based on the standard formula using a similarity/adjacency matrix.
+    *   Added type hints, docstrings, and basic tests.
+*   Implemented `remove_redundant_items_uva` function in `src/ega_service.py`:
+    *   Takes an initial similarity matrix and item labels as input.
+    *   Iteratively calculates wTO (using `calculate_wto`) on the current subset of the *initial similarity matrix*.
+    *   Removes the most redundant item (highest wTO, tie-breaking with lowest sum similarity) if wTO exceeds a threshold.
+    *   Returns the list of remaining items and a log of removed items.
+    *   Added type hints, docstrings, and basic tests.
+*   Integrated UVA into `app.py` (New Section 7):
+    *   Added necessary imports and session state variables (`uva_*`).
+    *   Added UI elements: Section header, slider for wTO threshold (default 0.20), button to run UVA.
+    *   Implemented button logic to call `remove_redundant_items_uva` using the similarity matrix selected in Section 6 (EGA).
+    *   Added display for UVA results (metrics for removed/remaining items, table of removed items, list of final items).
+    *   Made subsequent sections (8: bootEGA, 9: Export) conditional on UVA completion.
+    *   Updated "Clear Item History & Start Over" button to reset UVA state.
+*   Fixed `AttributeError` in `app.py` by re-adding missing initialization for `show_network_labels` in session state.

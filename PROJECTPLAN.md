@@ -99,6 +99,10 @@ graph TD
 - [ ] Compute wTO based on network structure from Phase 3 (potentially requires GGM estimation; consider sparse vs. dense input)
 - [ ] Iteratively remove item with highest wTO ≥ threshold (default 0.20, adjustable via slider)
 - [ ] Display dropped items table; allow user override (restore checkbox)
+- [ ] **Refactor UVA implementation:** Modify `remove_redundant_items_uva` to accept the constructed network graph (TMFG or EBICglasso) from Phase 3.
+- [ ] Inside the UVA loop, calculate wTO based on an adjacency matrix derived from the *current subgraph's structure* (e.g., absolute partial correlations for EBICglasso, existing edge weights for TMFG), **not** the raw similarity matrix subset.
+- [ ] Iteratively remove item with highest wTO ≥ threshold (default 0.20, adjustable via slider), using sum of *graph-based* connection strengths for tie-breaking.
+- [ ] Display dropped items table; allow user override (restore checkbox) [UI feature].
 
 ### Phase 5 — bootEGA Stability
 - [ ] Bootstrap resampling engine (multiprocessing fallback)
