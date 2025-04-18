@@ -25,7 +25,8 @@ from src.ega_service import (
     construct_tmfg_network,
     construct_ebicglasso_network,
     detect_communities_walktrap,
-    calculate_tefi
+    calculate_tefi,
+    remove_redundant_items_uva
 )
 
 # Attempt to import optional igraph for community detection
@@ -226,6 +227,87 @@ def main():
         Follows principles from the AI-GENIE paper (van Lissa et al., 2024).
         """)
 
+    # --- Initialize Session State --- #
+    if "item_pool_text" not in st.session_state:
+        st.session_state.item_pool_text = ""
+    if "previous_items" not in st.session_state:
+        st.session_state.previous_items = [] # Holds the list of *confirmed* items
+    if "items_confirmed" not in st.session_state:
+        st.session_state.items_confirmed = False
+
+    # Embedding State
+    if "dense_embeddings" not in st.session_state:
+        st.session_state.dense_embeddings = None
+    if "sparse_embeddings_tfidf" not in st.session_state:
+        st.session_state.sparse_embeddings_tfidf = None
+    if "embedding_error" not in st.session_state:
+        st.session_state.embedding_error = None
+
+    # Similarity Matrix State
+    if "similarity_matrix_dense" not in st.session_state:
+        st.session_state.similarity_matrix_dense = None
+    if "similarity_matrix_sparse" not in st.session_state:
+        st.session_state.similarity_matrix_sparse = None
+    if "similarity_error" not in st.session_state:
+        st.session_state.similarity_error = None
+
+    # EGA State
+    if "ega_method" not in st.session_state:
+        st.session_state.ega_method = "TMFG"
+    if "ega_input" not in st.session_state:
+        st.session_state.ega_input = "Dense Embeddings"
+    if "tmfg_graph_dense" not in st.session_state:
+        st.session_state.tmfg_graph_dense = None
+    if "tmfg_graph_sparse" not in st.session_state:
+        st.session_state.tmfg_graph_sparse = None
+    if "glasso_graph_dense" not in st.session_state:
+        st.session_state.glasso_graph_dense = None
+    if "glasso_graph_sparse" not in st.session_state:
+        st.session_state.glasso_graph_sparse = None
+    if "ega_graph_error" not in st.session_state:
+        st.session_state.ega_graph_error = None
+    if "community_membership_dense_tmfg" not in st.session_state:
+        st.session_state.community_membership_dense_tmfg = None
+    if "community_membership_sparse_tmfg" not in st.session_state:
+        st.session_state.community_membership_sparse_tmfg = None
+    if "community_membership_dense_glasso" not in st.session_state:
+        st.session_state.community_membership_dense_glasso = None
+    if "community_membership_sparse_glasso" not in st.session_state:
+        st.session_state.community_membership_sparse_glasso = None
+    if "clustering_object_dense_tmfg" not in st.session_state:
+        st.session_state.clustering_object_dense_tmfg = None
+    if "clustering_object_sparse_tmfg" not in st.session_state:
+        st.session_state.clustering_object_sparse_tmfg = None
+    if "clustering_object_dense_glasso" not in st.session_state:
+        st.session_state.clustering_object_dense_glasso = None
+    if "clustering_object_sparse_glasso" not in st.session_state:
+        st.session_state.clustering_object_sparse_glasso = None
+    if "community_error" not in st.session_state:
+        st.session_state.community_error = None
+    if "show_network_labels" not in st.session_state:
+        st.session_state.show_network_labels = False # Default to hiding labels
+    if "tefi_dense_tmfg" not in st.session_state:
+        st.session_state.tefi_dense_tmfg = np.nan
+    if "tefi_sparse_tmfg" not in st.session_state:
+        st.session_state.tefi_sparse_tmfg = np.nan
+    if "tefi_dense_glasso" not in st.session_state:
+        st.session_state.tefi_dense_glasso = np.nan
+    if "tefi_sparse_glasso" not in st.session_state:
+        st.session_state.tefi_sparse_glasso = np.nan
+    # NMI will be added later
+
+    # UVA State
+    if "uva_remaining_items" not in st.session_state:
+        st.session_state.uva_remaining_items = None
+    if "uva_removed_items_log" not in st.session_state:
+        st.session_state.uva_removed_items_log = None
+    if "uva_threshold_used" not in st.session_state:
+        st.session_state.uva_threshold_used = 0.20 # Default threshold
+    if "uva_run_complete" not in st.session_state:
+        st.session_state.uva_run_complete = False
+    if "uva_error" not in st.session_state:
+        st.session_state.uva_error = None
+
     # --- Section 1: Select Focus and Parameters ---
     st.header("1. Select Focus and Parameters")
     selected_option = st.selectbox(
@@ -275,57 +357,6 @@ def main():
     # --- Section 3: Generate, Edit, and Confirm Items ---
     st.header("3. Generate, Edit, and Confirm Items")
 
-    # Initialize session state
-    if 'previous_items' not in st.session_state:
-        st.session_state.previous_items = []
-    if "dense_embeddings" not in st.session_state:
-        st.session_state.dense_embeddings = None
-    # Renamed sparse embeddings session state variable
-    if "sparse_embeddings_tfidf" not in st.session_state:
-        st.session_state.sparse_embeddings_tfidf = None
-    # Add session state for similarity matrices
-    if "similarity_matrix_dense" not in st.session_state:
-        st.session_state.similarity_matrix_dense = None
-    if "similarity_matrix_sparse" not in st.session_state:
-        st.session_state.similarity_matrix_sparse = None
-    # Add session state for TMFG graphs
-    if "tmfg_graph_dense" not in st.session_state:
-        st.session_state.tmfg_graph_dense = None
-    if "tmfg_graph_sparse" not in st.session_state:
-        st.session_state.tmfg_graph_sparse = None
-    # Add session state for EBICglasso graphs
-    if "glasso_graph_dense" not in st.session_state:
-        st.session_state.glasso_graph_dense = None
-    if "glasso_graph_sparse" not in st.session_state:
-        st.session_state.glasso_graph_sparse = None
-
-    # Add session state for community detection results
-    if "communities_tmfg_dense" not in st.session_state:
-        st.session_state.communities_tmfg_dense = None
-    if "modularity_tmfg_dense" not in st.session_state:
-        st.session_state.modularity_tmfg_dense = None
-    if "communities_tmfg_sparse" not in st.session_state:
-        st.session_state.communities_tmfg_sparse = None
-    if "modularity_tmfg_sparse" not in st.session_state:
-        st.session_state.modularity_tmfg_sparse = None
-    if "communities_glasso_dense" not in st.session_state:
-        st.session_state.communities_glasso_dense = None
-    if "modularity_glasso_dense" not in st.session_state:
-        st.session_state.modularity_glasso_dense = None
-    if "communities_glasso_sparse" not in st.session_state:
-        st.session_state.communities_glasso_sparse = None
-    if "modularity_glasso_sparse" not in st.session_state:
-        st.session_state.modularity_glasso_sparse = None
-    # Add session state for label visibility toggle
-    if "show_network_labels" not in st.session_state:
-        st.session_state.show_network_labels = False # Default to False (Hide)
-    # Add state to track if item pool is confirmed
-    if "items_confirmed" not in st.session_state:
-        st.session_state.items_confirmed = False
-    # Add state to hold the text area content separately temporarily
-    if "item_pool_text" not in st.session_state:
-        st.session_state.item_pool_text = ""
-
     # Display Generation Controls
     col_gen1, col_gen2 = st.columns([1, 1])
     with col_gen1:
@@ -358,31 +389,41 @@ def main():
     with col_gen2:
         if st.button("Clear Item History & Start Over", disabled=st.session_state.items_confirmed):
             # This button resets everything, including the text area
+            st.session_state.item_pool_text = ""
             st.session_state.previous_items = []
+            st.session_state.items_confirmed = False
+            # Clear downstream states
             st.session_state.dense_embeddings = None
             st.session_state.sparse_embeddings_tfidf = None
+            st.session_state.embedding_error = None
             st.session_state.similarity_matrix_dense = None
             st.session_state.similarity_matrix_sparse = None
+            st.session_state.similarity_error = None
             st.session_state.tmfg_graph_dense = None
             st.session_state.tmfg_graph_sparse = None
             st.session_state.glasso_graph_dense = None
             st.session_state.glasso_graph_sparse = None
-            st.session_state.communities_tmfg_dense = None
-            st.session_state.modularity_tmfg_dense = None
-            st.session_state.communities_tmfg_sparse = None
-            st.session_state.modularity_tmfg_sparse = None
-            st.session_state.communities_glasso_dense = None
-            st.session_state.modularity_glasso_dense = None
-            st.session_state.communities_glasso_sparse = None
-            st.session_state.modularity_glasso_sparse = None
-            st.session_state.tefi_tmfg_dense = None
-            st.session_state.tefi_tmfg_sparse = None
-            st.session_state.tefi_glasso_dense = None
-            st.session_state.tefi_glasso_sparse = None
-            st.session_state.show_network_labels = False
-            st.session_state.items_confirmed = False
-            st.session_state.item_pool_text = "" # Clear text area content too
-            st.success("Item generation history and all derived data cleared.")
+            st.session_state.ega_graph_error = None
+            st.session_state.community_membership_dense_tmfg = None
+            st.session_state.community_membership_sparse_tmfg = None
+            st.session_state.community_membership_dense_glasso = None
+            st.session_state.community_membership_sparse_glasso = None
+            st.session_state.clustering_object_dense_tmfg = None
+            st.session_state.clustering_object_sparse_tmfg = None
+            st.session_state.clustering_object_dense_glasso = None
+            st.session_state.clustering_object_sparse_glasso = None
+            st.session_state.community_error = None
+            st.session_state.tefi_dense_tmfg = np.nan
+            st.session_state.tefi_sparse_tmfg = np.nan
+            st.session_state.tefi_dense_glasso = np.nan
+            st.session_state.tefi_sparse_glasso = np.nan
+            # Clear UVA state
+            st.session_state.uva_remaining_items = None
+            st.session_state.uva_removed_items_log = None
+            st.session_state.uva_threshold_used = 0.20 # Reset to default
+            st.session_state.uva_run_complete = False
+            st.session_state.uva_error = None
+            # Clear potentially other future states here
             st.rerun()
 
     # Editable Item Pool Text Area
@@ -786,6 +827,143 @@ def main():
 
         else:
             st.metric(f"{network_method} Network ({input_matrix_type})", "Not Constructed", "-")
+
+
+    # --- Section 7: Unique Variable Analysis (UVA) - Remove Redundancy --- #
+    st.header("7. Unique Variable Analysis (UVA)")
+
+    # Determine if prerequisite similarity matrix for UVA is available
+    # UVA needs the *initial* similarity matrix corresponding to the *confirmed* items
+    # We'll use the similarity matrix chosen implicitly by the EGA input selection for now.
+    # A more robust approach might explicitly store the similarity matrix used for UVA.
+    prereq_for_uva = (
+        st.session_state.items_confirmed and
+        (st.session_state.similarity_matrix_dense is not None or st.session_state.similarity_matrix_sparse is not None)
+    )
+
+    if prereq_for_uva:
+        st.subheader("7.1 Configure & Run UVA")
+
+        # Select which similarity matrix to use for UVA (based on EGA selection or allow choice)
+        # For simplicity, let's base it on the EGA input type selected in Section 6
+        uva_input_matrix = None
+        uva_input_type_label = ""
+        if st.session_state.ega_input == "Dense Embeddings" and st.session_state.similarity_matrix_dense is not None:
+            uva_input_matrix = st.session_state.similarity_matrix_dense
+            uva_input_type_label = "Dense Similarity Matrix"
+        elif st.session_state.ega_input == "Sparse Embeddings (TF-IDF)" and st.session_state.similarity_matrix_sparse is not None:
+            uva_input_matrix = st.session_state.similarity_matrix_sparse
+            uva_input_type_label = "Sparse Similarity Matrix"
+        else:
+            # Fallback if EGA input doesn't match available matrix (shouldn't happen if logic is sound)
+            if st.session_state.similarity_matrix_dense is not None:
+                 uva_input_matrix = st.session_state.similarity_matrix_dense
+                 uva_input_type_label = "Dense Similarity Matrix (Fallback)"
+            elif st.session_state.similarity_matrix_sparse is not None:
+                 uva_input_matrix = st.session_state.similarity_matrix_sparse
+                 uva_input_type_label = "Sparse Similarity Matrix (Fallback)"
+
+        if uva_input_matrix is not None:
+            st.write(f"Using: **{uva_input_type_label}** (based on Section 6 input selection)")
+
+            # Slider for wTO threshold
+            wto_threshold = st.slider(
+                "wTO Redundancy Threshold:",
+                min_value=0.0,
+                max_value=1.0,
+                value=st.session_state.get("uva_threshold_used", 0.20), # Use last used or default
+                step=0.01,
+                help="Items in pairs with wTO >= this value will be considered for removal. Lower values remove more items. (AI-GENIE paper suggests 0.20)",
+                key="uva_threshold_slider"
+            )
+
+            # Button to run UVA
+            if st.button("Run UVA to Remove Redundant Items", key="run_uva"):
+                confirmed_items = st.session_state.previous_items
+                if uva_input_matrix is not None and confirmed_items:
+                    try:
+                        st.session_state.uva_error = None # Clear previous errors
+                        with st.spinner("Running Unique Variable Analysis... This may take a moment."):
+                            remaining, removed_log = remove_redundant_items_uva(
+                                initial_similarity_matrix=uva_input_matrix,
+                                item_labels=confirmed_items,
+                                wto_threshold=wto_threshold,
+                            )
+                        st.session_state.uva_remaining_items = remaining
+                        st.session_state.uva_removed_items_log = removed_log
+                        st.session_state.uva_threshold_used = wto_threshold # Store threshold used
+                        st.session_state.uva_run_complete = True
+                        st.success("UVA process completed.")
+                        st.rerun() # Rerun to update display immediately
+
+                    except (ValueError, TypeError) as e:
+                        st.session_state.uva_error = f"UVA Input Error: {e}"
+                        st.session_state.uva_run_complete = False
+                        st.error(st.session_state.uva_error)
+                    except Exception as e:
+                        st.session_state.uva_error = f"An unexpected error occurred during UVA: {traceback.format_exc()}"
+                        st.session_state.uva_run_complete = False
+                        st.error(st.session_state.uva_error)
+                else:
+                    st.warning("Cannot run UVA. Ensure items are confirmed and a similarity matrix is available.")
+
+            # Display UVA error if it occurred
+            if st.session_state.get("uva_error"):
+                st.error(f"UVA Error: {st.session_state.uva_error}")
+
+        else:
+             st.warning("Selected input similarity matrix type not available. Please calculate it in Section 5.")
+
+        # --- Display UVA Results --- #
+        st.subheader("7.2 UVA Results")
+        if st.session_state.get("uva_run_complete"):
+            removed_log = st.session_state.uva_removed_items_log
+            remaining_items = st.session_state.uva_remaining_items
+            threshold = st.session_state.uva_threshold_used
+            initial_count = len(st.session_state.previous_items)
+            removed_count = len(removed_log)
+            remaining_count = len(remaining_items)
+
+            st.metric(label=f"Items Removed (wTO >= {threshold:.2f})", value=removed_count, delta=f"{removed_count - initial_count} items removed")
+            st.metric(label="Items Remaining", value=remaining_count)
+
+            if removed_log:
+                st.write("Items removed due to redundancy:")
+                # Convert log to DataFrame for better display
+                removed_df = pd.DataFrame(removed_log, columns=['Removed Item', 'Triggering wTO'])
+                removed_df['Triggering wTO'] = removed_df['Triggering wTO'].round(4)
+                st.dataframe(removed_df, use_container_width=True)
+            else:
+                st.info("No items were removed based on the current threshold.")
+
+            st.write("Final items after UVA:")
+            st.text_area(
+                "Remaining Items",
+                value="\n".join(remaining_items) if remaining_items else "",
+                height=200,
+                disabled=True,
+                key="uva_remaining_items_display"
+            )
+        else:
+            st.info("Run UVA in section 7.1 to see results.")
+
+    else:
+        st.info("Calculate at least one similarity matrix (Section 5) to proceed to UVA.")
+
+    # --- Section 8: bootEGA (Placeholder) --- #
+    st.header("8. bootEGA Stability Analysis (Phase 5)")
+    if st.session_state.get("uva_run_complete"):
+         st.info("TODO: Implement bootEGA based on the remaining items from UVA.")
+         # Future logic will depend on st.session_state.uva_remaining_items
+    else:
+         st.info("Complete Unique Variable Analysis (Section 7) to proceed to bootEGA.")
+
+    # --- Section 9: Export (Placeholder) --- #
+    st.header("9. Export Results (Phase 6)")
+    if st.session_state.get("uva_run_complete"): # Should depend on bootEGA completion eventually
+         st.info("TODO: Implement PDF report and CSV export.")
+    else:
+         st.info("Complete the analysis pipeline (including UVA and bootEGA) to enable export.")
 
 
 def parse_items_from_text(text_content: str) -> list[str]:

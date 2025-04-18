@@ -85,6 +85,89 @@ def calculate_similarity_matrix(
 
     return similarity_matrix
 
+def calculate_wto(similarity_matrix: np.ndarray) -> np.ndarray:
+    """Calculates the Weighted Topological Overlap (wTO) matrix.
+
+    The wTO measure quantifies the similarity between two nodes based not only
+    on their direct connection strength but also on the similarity of their
+    connection patterns with other nodes in the network.
+
+    The formula used is:
+        wTO_ij = (L_ij + a_ij) / (min(k_i, k_j) + 1 - a_ij)
+    where:
+        - a_ij is the absolute similarity between node i and node j (|similarity_matrix[i, j]|)
+        - L_ij = sum_{k != i, j} (a_ik * a_jk) is the shared neighbor strength
+        - k_i = sum_{k != i} a_ik is the total connection strength (node degree) of node i
+
+    Args:
+        similarity_matrix: A square (n_items, n_items) NumPy array of pairwise
+            similarities (e.g., cosine similarity or correlation). Values are
+            expected to be between -1 and 1. Diagonal elements are ignored.
+
+    Returns:
+        A square NumPy array of shape (n_items, n_items) containing the
+        pairwise wTO values. Values range from 0 to 1. Diagonal elements
+        are set to 1.0.
+
+    Raises:
+        ValueError: If the similarity matrix is not square, not 2D, or has less than 2 nodes.
+        TypeError: If similarity_matrix is not a NumPy array.
+
+    References:
+        Zhang, B., & Horvath, S. (2005). A general framework for weighted gene
+        co-expression network analysis. Statistical applications in genetics
+        and molecular biology, 4(1).
+    """
+    if not isinstance(similarity_matrix, np.ndarray):
+        raise TypeError("Input similarity_matrix must be a NumPy array.")
+    if similarity_matrix.ndim != 2 or similarity_matrix.shape[0] != similarity_matrix.shape[1]:
+        raise ValueError("Input similarity_matrix must be a square 2D array.")
+
+    n_items = similarity_matrix.shape[0]
+    if n_items < 2:
+        # wTO requires at least 2 nodes.
+        return np.array([[1.0]]) if n_items == 1 else np.array([[]])
+
+    # Use absolute similarity for calculations, as wTO assumes weights >= 0
+    adj_matrix = np.abs(similarity_matrix.copy())
+    np.fill_diagonal(adj_matrix, 0) # Ignore self-similarity in sums
+
+    # Calculate L_ij (shared neighbor strength matrix)
+    # This is equivalent to the matrix multiplication A * A
+    L = adj_matrix @ adj_matrix
+
+    # Calculate k_i (node strength vector)
+    k = np.sum(adj_matrix, axis=1) # Sum across rows
+
+    # Prepare matrices for vectorized calculation
+    k_i = k[:, np.newaxis] # Reshape k to column vector for broadcasting
+    k_j = k[np.newaxis, :] # Reshape k to row vector for broadcasting
+
+    # Calculate the denominator: min(k_i, k_j) + 1 - a_ij
+    min_k = np.minimum(k_i, k_j)
+    denominator = min_k + 1 - adj_matrix
+
+    # Calculate the numerator: L_ij + a_ij
+    numerator = L + adj_matrix
+
+    # --- Calculate wTO ---
+    # Initialize wTO matrix
+    wto_matrix = np.zeros_like(adj_matrix)
+
+    # Avoid division by zero where denominator is close to zero
+    # This typically happens for pairs of disconnected nodes (a_ij=0, min_k=0)
+    # In such cases, wTO should be 0.
+    valid_denominator = denominator > 1e-12 # Use a small epsilon
+    wto_matrix[valid_denominator] = numerator[valid_denominator] / denominator[valid_denominator]
+
+    # Ensure diagonal is 1.0
+    np.fill_diagonal(wto_matrix, 1.0)
+
+    # Clip values to [0, 1] just in case of floating point inaccuracies
+    wto_matrix = np.clip(wto_matrix, 0.0, 1.0)
+
+    return wto_matrix
+
 def construct_tmfg_network(
     similarity_matrix: np.ndarray,
     item_labels: list[str] | None = None,
@@ -622,17 +705,149 @@ def calculate_nmi(membership1: dict[str | int, int], membership2: dict[str | int
     return nmi_score
 
 
+def remove_redundant_items_uva(
+    initial_similarity_matrix: np.ndarray,
+    item_labels: list[str | int],
+    wto_threshold: float = 0.20,
+) -> tuple[list[str | int], list[tuple[str | int, float]]]:
+    """Performs Unique Variable Analysis (UVA) to remove redundant items.
+
+    Iteratively removes the most redundant item based on Weighted Topological
+    Overlap (wTO) until no pair of items has a wTO value above the specified
+    threshold.
+
+    Redundancy tie-breaking: If multiple pairs have the maximum wTO, the item
+    to be removed is chosen from the pair(s) by selecting the item with the
+    *lowest* sum of absolute similarities to all *other remaining* items.
+
+    Args:
+        initial_similarity_matrix: The initial square (n_items, n_items) similarity
+            matrix corresponding to the full set of initial item_labels.
+        item_labels: A list of the initial item labels (strings or integers).
+            The order must correspond to the rows/columns of the
+            initial_similarity_matrix.
+        wto_threshold: The cutoff value for wTO. Items in pairs with wTO >= threshold
+                       are considered redundant. Defaults to 0.20 based on the
+                       AI-GENIE paper suggestion.
+
+    Returns:
+        A tuple containing:
+        - remaining_items (list[str | int]): A list of the item labels that
+          were NOT removed.
+        - removed_items_log (list[tuple[str | int, float]]): A list of tuples,
+          where each tuple contains the label of the removed item and the
+          maximum wTO value that triggered its removal.
+
+    Raises:
+        ValueError: If input dimensions or labels mismatch, or threshold is invalid.
+        TypeError: If inputs have incorrect types.
+    """
+    # --- Input Validation ---
+    if not isinstance(initial_similarity_matrix, np.ndarray):
+        raise TypeError("Input initial_similarity_matrix must be a NumPy array.")
+    if initial_similarity_matrix.ndim != 2 or initial_similarity_matrix.shape[0] != initial_similarity_matrix.shape[1]:
+        raise ValueError("Input initial_similarity_matrix must be a square 2D array.")
+    if not isinstance(item_labels, list):
+        raise TypeError("Input item_labels must be a list.")
+    if len(item_labels) != initial_similarity_matrix.shape[0]:
+        raise ValueError("Length of item_labels must match the dimension of the initial_similarity_matrix.")
+    if not isinstance(wto_threshold, (int, float)) or not (0 <= wto_threshold <= 1):
+        raise ValueError("wto_threshold must be a float between 0 and 1.")
+
+    n_initial = len(item_labels)
+    if n_initial < 2:
+        # No pairs to compare, no removal needed
+        return item_labels, []
+
+    # --- Initialization ---
+    # Keep track of active indices corresponding to the initial matrix
+    current_indices = list(range(n_initial))
+    removed_items_log = []
+    # Create a mapping from initial index to label for easy lookup
+    index_to_label = {i: label for i, label in enumerate(item_labels)}
+
+    # --- Iterative Removal Loop ---
+    while len(current_indices) >= 2:
+        # 1. Get the subset of the similarity matrix for currently active items
+        current_sim_matrix = initial_similarity_matrix[np.ix_(current_indices, current_indices)]
+
+        # 2. Calculate wTO for the current subset
+        # Need at least 2 items to calculate wTO
+        if current_sim_matrix.shape[0] < 2:
+             break # Should not happen due to while loop condition, but safe check
+        current_wto_matrix = calculate_wto(current_sim_matrix)
+
+        # 3. Find the maximum off-diagonal wTO value
+        np.fill_diagonal(current_wto_matrix, -np.inf) # Ignore diagonal
+        max_wto = np.max(current_wto_matrix)
+
+        # 4. Check if max wTO meets removal threshold
+        if max_wto < wto_threshold:
+            break # No more redundancy found
+
+        # 5. Identify pair(s) with max wTO
+        # Find indices within the *current_wto_matrix* (local indices)
+        max_wto_indices_local = np.argwhere(current_wto_matrix >= max_wto - 1e-9) # Use tolerance for float comparison
+
+        # 6. Determine which item to remove (tie-breaking)
+        item_to_remove_local_idx = -1
+        min_sum_similarity = np.inf
+
+        # Use absolute similarity for connection strength calculation
+        current_abs_sim_matrix = np.abs(current_sim_matrix)
+        np.fill_diagonal(current_abs_sim_matrix, 0)
+
+        # Calculate sum similarity for all currently active nodes
+        current_sum_similarities = np.sum(current_abs_sim_matrix, axis=1)
+
+        candidate_items_local_indices = set()
+        for idx_pair_local in max_wto_indices_local:
+            candidate_items_local_indices.add(idx_pair_local[0])
+            candidate_items_local_indices.add(idx_pair_local[1])
+
+        for local_idx in candidate_items_local_indices:
+            node_sum_similarity = current_sum_similarities[local_idx]
+
+            # Compare with current minimum
+            # If lower sum_similarity found, this becomes the new item to remove
+            # If equal sum_similarity, the one encountered first (arbitrary but consistent) is kept
+            if node_sum_similarity < min_sum_similarity:
+                min_sum_similarity = node_sum_similarity
+                item_to_remove_local_idx = local_idx
+            elif node_sum_similarity == min_sum_similarity:
+                # Tie-breaking: If sums are equal, prefer removing the one with the higher index
+                # This provides deterministic behavior but is somewhat arbitrary.
+                # Another option could be random choice or based on original label order.
+                if item_to_remove_local_idx != -1 and local_idx > item_to_remove_local_idx:
+                    item_to_remove_local_idx = local_idx
+        # 7. Remove the selected item
+        if item_to_remove_local_idx != -1:
+            # Map local index back to the original index
+            original_index_to_remove = current_indices.pop(item_to_remove_local_idx)
+            removed_label = index_to_label[original_index_to_remove]
+            removed_items_log.append((removed_label, max_wto))
+            print(f"    [UVA] Removing item '{removed_label}' (Initial index: {original_index_to_remove}) due to max wTO {max_wto:.4f}") # Debug print
+        else:
+            # Should not happen if max_wto >= threshold, but safety break
+            print("Warning: Could not identify item to remove despite max_wto >= threshold.")
+            break
+
+    # --- Return Results ---
+    remaining_items = [index_to_label[i] for i in current_indices]
+    return remaining_items, removed_items_log
+
+
 # TODO: Further testing for TEFI and NMI in __main__
 
 if __name__ == '__main__':
     # Example Usage & Basic Test Cases
     print("Testing with dense embeddings:")
     dense_embeddings = np.array([[1, 0, 0], [0, 1, 1], [1, 0, 1], [0.5, 0.5, 0.5]])
-    similarity_dense = calculate_similarity_matrix(dense_embeddings)
+    similarity = calculate_similarity_matrix(dense_embeddings)
     print("Dense Embeddings (4x3):\n", dense_embeddings)
-    print("Similarity Matrix:\n", similarity_dense.round(3))
-    assert similarity_dense.shape == (4, 4), "Shape mismatch for dense"
-    assert np.allclose(np.diag(similarity_dense), 1.0), "Diagonal not 1.0 for dense"
+    print("Similarity Matrix:\n", similarity.round(3))
+    assert similarity.shape == (4, 4), "Shape mismatch for dense"
+    assert np.allclose(np.diag(similarity), 1.0), "Diagonal not 1.0 for dense"
 
     print("\nTesting with sparse embeddings:")
     sparse_embeddings = sp.csr_matrix([[1, 0, 0], [0, 1, 1], [1, 0, 1], [0.5, 0.5, 0.5]])
@@ -824,5 +1039,50 @@ if __name__ == '__main__':
         print("Skipping NMI test: scikit-learn not installed.")
     except ValueError as e:
          print(f"Error during NMI test: {e}")
+
+    print("\nAll basic tests passed.")
+
+    print("\n--- Testing UVA Item Removal ---")
+    # Test case 1: Clear redundancy
+    sim_redundant = np.array([
+        [1.0, 0.9, 0.2, 0.3], # A, highly similar to B
+        [0.9, 1.0, 0.3, 0.4], # B
+        [0.2, 0.3, 1.0, 0.8], # C, highly similar to D
+        [0.3, 0.4, 0.8, 1.0]  # D
+    ])
+    labels_redundant = ['A', 'B', 'C', 'D']
+    print(f"\nInitial items: {labels_redundant}")
+    remaining_uva1, removed_uva1 = remove_redundant_items_uva(sim_redundant, labels_redundant, wto_threshold=0.5)
+    print(f"Remaining items (Threshold 0.5): {remaining_uva1}")
+    print(f"Removed items log: {removed_uva1}")
+    # Expected: Either A or B removed first, then either C or D. Which one depends on sum similarity tie-break.
+
+    # Test case 2: Lower threshold, potentially removing more
+    print(f"\nInitial items: {labels_redundant}")
+    remaining_uva2, removed_uva2 = remove_redundant_items_uva(sim_redundant, labels_redundant, wto_threshold=0.2)
+    print(f"Remaining items (Threshold 0.2): {remaining_uva2}")
+    print(f"Removed items log: {removed_uva2}")
+
+    # Test case 3: No redundancy above threshold
+    sim_noredund = np.array([
+        [1.0, 0.1, 0.2],
+        [0.1, 1.0, 0.3],
+        [0.2, 0.3, 1.0]
+    ])
+    labels_noredund = ['X', 'Y', 'Z']
+    print(f"\nInitial items: {labels_noredund}")
+    remaining_uva3, removed_uva3 = remove_redundant_items_uva(sim_noredund, labels_noredund, wto_threshold=0.5)
+    print(f"Remaining items (Threshold 0.5): {remaining_uva3}")
+    print(f"Removed items log: {removed_uva3}")
+    assert remaining_uva3 == labels_noredund
+    assert not removed_uva3
+
+    # Test case 4: Edge case - fewer than 2 items
+    print(f"\nInitial items: ['Single']")
+    remaining_uva4, removed_uva4 = remove_redundant_items_uva(np.array([[1.0]]), ['Single'], wto_threshold=0.2)
+    print(f"Remaining items: {remaining_uva4}")
+    print(f"Removed items log: {removed_uva4}")
+    assert remaining_uva4 == ['Single']
+    assert not removed_uva4
 
     print("\nAll basic tests passed.") 

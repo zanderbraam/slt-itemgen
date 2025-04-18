@@ -96,8 +96,8 @@ graph TD
 - [x] Plot: Implement interactive network visualization (e.g., `pyvis` or `plotly`) showing items colored by detected community
 
 ### Phase 4 — Unique Variable Analysis
-- [ ] Compute wTO for full matrix
-- [ ] Iterative redundancy removal loop (threshold slider)
+- [ ] Compute wTO based on network structure from Phase 3 (potentially requires GGM estimation; consider sparse vs. dense input)
+- [ ] Iteratively remove item with highest wTO ≥ threshold (default 0.20, adjustable via slider)
 - [ ] Display dropped items table; allow user override (restore checkbox)
 
 ### Phase 5 — bootEGA Stability
