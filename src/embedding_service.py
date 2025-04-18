@@ -32,6 +32,7 @@ def _fetch_dense_embeddings_from_api(
     """
     try:
         client = OpenAI()
+        print(">>> Making ACTUAL API call to OpenAI...")
         response = client.embeddings.create(
             input=list(items),
             model=model,

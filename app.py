@@ -5,6 +5,11 @@ import traceback
 
 import streamlit as st
 from openai import OpenAI, APIError
+import networkx as nx
+import matplotlib.pyplot as plt
+import pandas as pd
+import numpy as np
+import joblib
 
 from src.prompting import (
     DEFAULT_NEGATIVE_EXAMPLES,
@@ -12,10 +17,24 @@ from src.prompting import (
     create_system_prompt,
     create_user_prompt,
     parse_generated_items,
-    filter_unique_items,
+    filter_unique_items
 )
-from src.embedding_service import get_dense_embeddings, get_sparse_embeddings_tfidf
+from src.embedding_service import get_dense_embeddings, get_sparse_embeddings_tfidf, memory
+from src.ega_service import calculate_similarity_matrix, construct_tmfg_network, construct_ebicglasso_network, detect_communities_walktrap
 
+# Attempt to import optional igraph for community detection
+try:
+    import igraph as ig
+    IGRAPH_AVAILABLE = True
+except ImportError:
+    IGRAPH_AVAILABLE = False
+    # No need to raise error here, handle gracefully later
+
+# Setup joblib memory cache
+CACHE_DIR = "./.joblib_cache"
+if not os.path.exists(CACHE_DIR):
+    os.makedirs(CACHE_DIR)
+# memory is already imported from embedding_service, assuming it's initialized there
 
 def load_local_secrets():
     """Load secrets from secrets.toml for local testing."""
@@ -121,6 +140,79 @@ specific_prompts = {
 }
 
 
+def plot_network_with_communities(
+    graph: nx.Graph,
+    membership: dict[str | int, int],
+    pos: dict | None = None,
+    title: str = "Network with Communities",
+    ax: plt.Axes | None = None,
+    show_labels: bool = False
+) -> None:
+    """Plots the network with nodes colored by community membership.
+
+    Args:
+        graph: The networkx graph.
+        membership: Dictionary mapping node ID to community ID. Assumes -1 for isolated nodes.
+        pos: Optional layout for nodes (e.g., from nx.spring_layout). If None, calculates spring layout.
+        title: Title for the plot.
+        ax: Matplotlib axes object to plot on. If None, uses current axes.
+        show_labels: If True, display node labels (item numbers).
+    """
+    if ax is None:
+        ax = plt.gca()
+
+    if pos is None:
+        pos = nx.spring_layout(graph, seed=42)  # Use a fixed seed for reproducibility
+
+    # Prepare node colors based on community membership
+    node_colors = []
+    unique_communities = sorted(list(set(membership.values())))
+    # Define a color map (e.g., viridis, tab10, etc.)
+    # Exclude -1 from the communities used for colormap generation
+    valid_communities = [c for c in unique_communities if c != -1]
+    cmap = plt.get_cmap('viridis', max(1, len(valid_communities)))  # Ensure at least 1 color
+
+    # Create a mapping from community ID to color
+    color_map = {comm_id: cmap(i) for i, comm_id in enumerate(valid_communities)}
+    color_map[-1] = 'grey'  # Assign grey to isolated nodes (community -1)
+
+    for node in graph.nodes():
+        community_id = membership.get(node, -1) # Default to -1 if node somehow missing
+        node_colors.append(color_map[community_id])
+
+    nx.draw_networkx_nodes(graph, pos, node_color=node_colors, node_size=300, alpha=0.8, ax=ax)
+    nx.draw_networkx_edges(graph, pos, alpha=0.5, edge_color='grey', ax=ax)
+
+    # Conditionally draw labels (extract number from 'Item X' format)
+    if show_labels:
+        labels = {}
+        for node in graph.nodes():
+            # Attempt to extract number if label is like 'Item X'
+            match = re.search(r'\d+$', str(node))
+            if match:
+                labels[node] = match.group(0)
+            else:
+                labels[node] = str(node) # Fallback to full node name
+        nx.draw_networkx_labels(graph, pos, labels=labels, font_size=8, ax=ax)
+
+    ax.set_title(title)
+    ax.axis('off')
+
+    # Add legend
+    legend_handles = []
+    # Add isolated node entry first if present
+    if -1 in unique_communities:
+        legend_handles.append(plt.Line2D([0], [0], marker='o', color='w', label='Isolated',
+                                         markerfacecolor='grey', markersize=10))
+    # Add other communities
+    for comm_id in valid_communities:
+        legend_handles.append(plt.Line2D([0], [0], marker='o', color='w', label=f'Community {comm_id}',
+                                         markerfacecolor=color_map[comm_id], markersize=10))
+
+    if legend_handles:
+        ax.legend(handles=legend_handles, title="Communities", loc='best')
+
+
 def main():
     st.title("SLTItemGen: AI-Assisted Psychometric Item Generator")
     st.write("""
@@ -185,6 +277,42 @@ def main():
     # Renamed sparse embeddings session state variable
     if "sparse_embeddings_tfidf" not in st.session_state:
         st.session_state.sparse_embeddings_tfidf = None
+    # Add session state for similarity matrices
+    if "similarity_matrix_dense" not in st.session_state:
+        st.session_state.similarity_matrix_dense = None
+    if "similarity_matrix_sparse" not in st.session_state:
+        st.session_state.similarity_matrix_sparse = None
+    # Add session state for TMFG graphs
+    if "tmfg_graph_dense" not in st.session_state:
+        st.session_state.tmfg_graph_dense = None
+    if "tmfg_graph_sparse" not in st.session_state:
+        st.session_state.tmfg_graph_sparse = None
+    # Add session state for EBICglasso graphs
+    if "glasso_graph_dense" not in st.session_state:
+        st.session_state.glasso_graph_dense = None
+    if "glasso_graph_sparse" not in st.session_state:
+        st.session_state.glasso_graph_sparse = None
+
+    # Add session state for community detection results
+    if "communities_tmfg_dense" not in st.session_state:
+        st.session_state.communities_tmfg_dense = None
+    if "modularity_tmfg_dense" not in st.session_state:
+        st.session_state.modularity_tmfg_dense = None
+    if "communities_tmfg_sparse" not in st.session_state:
+        st.session_state.communities_tmfg_sparse = None
+    if "modularity_tmfg_sparse" not in st.session_state:
+        st.session_state.modularity_tmfg_sparse = None
+    if "communities_glasso_dense" not in st.session_state:
+        st.session_state.communities_glasso_dense = None
+    if "modularity_glasso_dense" not in st.session_state:
+        st.session_state.modularity_glasso_dense = None
+    if "communities_glasso_sparse" not in st.session_state:
+        st.session_state.communities_glasso_sparse = None
+    if "modularity_glasso_sparse" not in st.session_state:
+        st.session_state.modularity_glasso_sparse = None
+    # Add session state for label visibility toggle
+    if "show_network_labels" not in st.session_state:
+        st.session_state.show_network_labels = False # Default to False (Hide)
 
     col1, col2 = st.columns([1, 1])
     with col1:
@@ -216,6 +344,26 @@ def main():
             st.session_state.previous_items = []
             st.session_state.dense_embeddings = None
             st.session_state.sparse_embeddings_tfidf = None # Clear TF-IDF embeddings too
+            # Clear similarity matrices as well
+            st.session_state.similarity_matrix_dense = None
+            st.session_state.similarity_matrix_sparse = None
+            # Clear network graphs
+            st.session_state.tmfg_graph_dense = None
+            st.session_state.tmfg_graph_sparse = None
+            st.session_state.glasso_graph_dense = None
+            st.session_state.glasso_graph_sparse = None
+            # Clear community results
+            st.session_state.communities_tmfg_dense = None
+            st.session_state.modularity_tmfg_dense = None
+            st.session_state.communities_tmfg_sparse = None
+            st.session_state.modularity_tmfg_sparse = None
+            st.session_state.communities_glasso_dense = None
+            st.session_state.modularity_glasso_dense = None
+            st.session_state.communities_glasso_sparse = None
+            st.session_state.modularity_glasso_sparse = None
+            # Clear label visibility toggle
+            st.session_state.show_network_labels = False
+
             st.success("Item generation history cleared.")
             st.rerun()
 
@@ -287,6 +435,266 @@ def main():
             st.metric("Sparse TF-IDF Status", "Generated", f"Shape: {st.session_state.sparse_embeddings_tfidf.shape}")
         else:
             st.metric("Sparse TF-IDF Status", "Not Generated", "-")
+
+    # --- Section 5: Calculate Similarity Matrix --- #
+    st.divider()
+    st.header("5. Calculate Similarity Matrix")
+    st.write("Calculate pairwise cosine similarity between items based on their embeddings.")
+
+    if not st.session_state.previous_items:
+        st.info("Generate items (Section 3) and embeddings (Section 4) first.")
+    else:
+        col_sim1, col_sim2 = st.columns(2)
+
+        with col_sim1:
+            st.subheader("5.1 From Dense Embeddings")
+            if st.session_state.dense_embeddings is not None:
+                st.info(f"Dense embeddings available (Shape: {st.session_state.dense_embeddings.shape}).")
+                if st.button("Calculate Dense Similarity", key="calc_dense_sim"):
+                    with st.spinner("Calculating dense similarity matrix..."):
+                        try:
+                            sim_matrix = calculate_similarity_matrix(st.session_state.dense_embeddings)
+                            st.session_state.similarity_matrix_dense = sim_matrix
+                            st.success("Dense similarity matrix calculated!")
+                            st.rerun() # Rerun to update display
+                        except Exception as e:
+                            st.error(f"Error calculating dense similarity: {e}")
+                            st.code(traceback.format_exc())
+            else:
+                st.warning("Generate Dense Embeddings (Section 4.1) first.")
+
+            # Display Dense Similarity Matrix Status
+            if st.session_state.similarity_matrix_dense is not None:
+                st.metric("Dense Similarity Matrix", "Calculated", f"Shape: {st.session_state.similarity_matrix_dense.shape}")
+                # Optional: Display a small preview (can be slow for large matrices)
+                # if st.checkbox("Show Dense Similarity Matrix Preview"):
+                #     st.dataframe(st.session_state.similarity_matrix_dense)
+            else:
+                st.metric("Dense Similarity Matrix", "Not Calculated", "-")
+
+        with col_sim2:
+            st.subheader("5.2 From Sparse Embeddings")
+            if st.session_state.sparse_embeddings_tfidf is not None:
+                st.info(f"Sparse TF-IDF embeddings available (Shape: {st.session_state.sparse_embeddings_tfidf.shape}).")
+                if st.button("Calculate Sparse Similarity", key="calc_sparse_sim"):
+                    with st.spinner("Calculating sparse TF-IDF similarity matrix..."):
+                        try:
+                            sim_matrix = calculate_similarity_matrix(st.session_state.sparse_embeddings_tfidf)
+                            st.session_state.similarity_matrix_sparse = sim_matrix
+                            st.success("Sparse TF-IDF similarity matrix calculated!")
+                            st.rerun() # Rerun to update display
+                        except Exception as e:
+                            st.error(f"Error calculating sparse similarity: {e}")
+                            st.code(traceback.format_exc())
+            else:
+                st.warning("Generate Sparse Embeddings (Section 4.2) first.")
+
+            # Display Sparse Similarity Matrix Status
+            if st.session_state.similarity_matrix_sparse is not None:
+                st.metric("Sparse Similarity Matrix", "Calculated", f"Shape: {st.session_state.similarity_matrix_sparse.shape}")
+                # Optional: Display a small preview
+                # if st.checkbox("Show Sparse Similarity Matrix Preview"):
+                #     st.dataframe(st.session_state.similarity_matrix_sparse)
+            else:
+                st.metric("Sparse Similarity Matrix", "Not Calculated", "-")
+
+    # --- Section 6: Construct Network & Detect Communities --- #
+    st.divider()
+    st.header("6. Construct Network & Detect Communities")
+    st.write("Build a network graph from the similarity matrix and detect communities using Walktrap.")
+
+    if not st.session_state.previous_items or (st.session_state.similarity_matrix_dense is None and st.session_state.similarity_matrix_sparse is None):
+        st.info("Generate items, embeddings, and calculate a similarity matrix first (Sections 3-5).")
+    else:
+        # --- Network Construction Selection ---
+        col_net1, col_net2 = st.columns(2)
+        with col_net1:
+            network_method = st.radio(
+                "Select Network Construction Method:",
+                ("TMFG", "EBICglasso"),
+                key="network_method_select",
+                # horizontal=True, # Keep vertical for clarity
+            )
+        with col_net2:
+            input_matrix_type = st.radio(
+                "Select Input Similarity Matrix:",
+                ("Dense Embeddings", "Sparse Embeddings (TF-IDF)"),
+                key="input_matrix_select",
+                # horizontal=True, # Keep vertical for clarity
+            )
+
+        # --- Determine state keys based on selections ---
+        matrix_suffix = "dense" if input_matrix_type == "Dense Embeddings" else "sparse"
+        method_prefix = "tmfg" if network_method == "TMFG" else "glasso"
+
+        selected_sim_matrix = st.session_state.get(f"similarity_matrix_{matrix_suffix}")
+        graph_state_key = f"{method_prefix}_graph_{matrix_suffix}"
+        community_membership_key = f"communities_{method_prefix}_{matrix_suffix}"
+        modularity_key = f"modularity_{method_prefix}_{matrix_suffix}"
+
+        # --- Construct Network Button and Logic ---
+        disable_construct_button = selected_sim_matrix is None
+        construct_button_label = f"Construct {network_method} Network"
+        if selected_sim_matrix is not None:
+            st.info(f"Ready to build {network_method} network from {input_matrix_type} similarity matrix (Shape: {selected_sim_matrix.shape}).")
+        else:
+            st.warning(f"Please calculate the similarity matrix for {input_matrix_type} first (Section 5).")
+
+
+        if st.button(construct_button_label, key="construct_network_button", disabled=disable_construct_button):
+            # Clear previous community results for this graph type if rebuilding
+            st.session_state[community_membership_key] = None
+            st.session_state[modularity_key] = None
+
+            item_labels = [f"Item {i+1}" for i in range(len(st.session_state.previous_items))]
+            if len(item_labels) != selected_sim_matrix.shape[0]:
+                    st.error("Mismatch between number of items and similarity matrix dimension during construction.")
+                    st.stop() # Prevent further execution in this run
+
+            if network_method == "TMFG":
+                with st.spinner(f"Constructing TMFG network from {input_matrix_type} similarity..."):
+                    try:
+                        graph = construct_tmfg_network(
+                            selected_sim_matrix,
+                            item_labels=item_labels
+                        )
+                        st.session_state[graph_state_key] = graph
+                        st.success(f"TMFG network constructed successfully from {input_matrix_type} data!")
+                        st.rerun()
+                    except ValueError as ve:
+                         st.error(f"Error during TMFG construction: {ve}")
+                         st.info("TMFG typically requires at least 3 items.")
+                    except ImportError:
+                         st.error("NetworkX library not found. Please install it (`pip install networkx`).")
+                    except Exception as e:
+                        st.error(f"An unexpected error occurred during TMFG construction: {e}")
+                        st.code(traceback.format_exc())
+            elif network_method == "EBICglasso":
+                 with st.spinner(f"Constructing EBICglasso network from {input_matrix_type} similarity..."):
+                    try:
+                        graph = construct_ebicglasso_network(
+                            selected_sim_matrix,
+                            item_labels=item_labels,
+                            assume_centered=True # Important when using similarity matrix
+                        )
+                        st.session_state[graph_state_key] = graph
+                        st.success(f"EBICglasso network constructed successfully from {input_matrix_type} data!")
+                        st.rerun()
+                    except ValueError as ve:
+                        st.error(f"Error during EBICglasso construction: {ve}")
+                        st.info("EBICglasso typically requires at least 2 items.")
+                    except ImportError:
+                         st.error("Scikit-learn or NetworkX library not found. Please install them.")
+                    except RuntimeError as rt:
+                        st.error(f"Runtime error during EBICglasso fitting: {rt}")
+                        # st.info("This might be due to issues with the input matrix or convergence problems.") # Redundant with error message
+                        st.code(traceback.format_exc())
+                    except Exception as e:
+                        st.error(f"An unexpected error occurred during EBICglasso construction: {e}")
+                        st.code(traceback.format_exc())
+            else:
+                st.error(f"Network construction method '{network_method}' not implemented yet.")
+
+        # --- Display Status & Community Detection --- #
+        st.subheader("Network Status & Community Detection")
+        current_graph = st.session_state.get(graph_state_key)
+        current_communities = st.session_state.get(community_membership_key)
+        current_modularity = st.session_state.get(modularity_key)
+
+        if current_graph is not None:
+            col_stat1, col_stat2, col_stat3 = st.columns(3) # Add column for modularity
+            with col_stat1:
+                st.metric(f"{network_method} Graph", "Constructed",
+                          f"{current_graph.number_of_nodes()} Nodes, {current_graph.number_of_edges()} Edges")
+            with col_stat2:
+                if current_communities is not None:
+                    num_communities = len(set(current_communities.values()))
+                    st.metric("Communities (Walktrap)", f"{num_communities} Found", delta=None) # Removed delta
+                else:
+                    st.metric("Communities (Walktrap)", "Not Detected", "-")
+            with col_stat3:
+                if current_modularity is not None:
+                     st.metric("Modularity", f"{current_modularity:.4f}", delta=None) # Removed delta
+                else:
+                     st.metric("Modularity", "-", "-")
+
+
+            # --- Detect Communities Button ---
+            st.caption("Use Walktrap algorithm to find communities within the constructed network.")
+            if st.button("Detect Communities", key="detect_communities_button"):
+                with st.spinner("Running Walktrap community detection..."):
+                    try:
+                        membership_dict, clustering = detect_communities_walktrap(
+                            current_graph,
+                            weights='weight' # Assuming edges have 'weight' attribute
+                        )
+                        st.session_state[community_membership_key] = membership_dict
+                        st.session_state[modularity_key] = clustering.modularity # Store modularity
+                        st.success(f"Walktrap detected {len(set(membership_dict.values()))} communities.")
+                        st.rerun() # Rerun to update metrics and plot color
+                    except ImportError:
+                        st.error("`python-igraph` library not found. Please install it (`pip install python-igraph`).")
+                    except KeyError as ke:
+                        st.error(f"Error during community detection: {ke}. Ensure graph edges have 'weight' attribute.")
+                    except RuntimeError as rt:
+                        st.error(f"Runtime error during community detection: {rt}")
+                        st.code(traceback.format_exc())
+                    except Exception as e:
+                         st.error(f"An unexpected error occurred during community detection: {e}")
+                         st.code(traceback.format_exc())
+
+
+            # --- Network Visualization --- #
+            # Add radio button for label visibility *before* the expander
+            label_visibility_choice = st.radio(
+                "Node Labels:",
+                ("Hide Item Numbers", "Show Item Numbers"),
+                index=1 if st.session_state.show_network_labels else 0, # Set index based on state
+                key="label_visibility_radio",
+                horizontal=True,
+            )
+            # Update session state based on radio button choice
+            st.session_state.show_network_labels = (label_visibility_choice == "Show Item Numbers")
+
+            with st.expander("Show Network Visualization", expanded=True): # Expand by default
+                try:
+                    fig, ax = plt.subplots(figsize=(10, 8))
+                    pos = nx.spring_layout(current_graph, seed=42) # Calculate layout once
+
+                    if current_communities:
+                        plot_network_with_communities(
+                            graph=current_graph,
+                            membership=current_communities,
+                            pos=pos, # Use pre-calculated layout
+                            title=f"{network_method} Network ({input_matrix_type.capitalize()}) - Walktrap Communities",
+                            ax=ax,
+                            show_labels=st.session_state.show_network_labels # Pass label visibility flag
+                        )
+                    else:
+                        # Plot without community colors if detection hasn't run or failed
+                        # Still respect the show_labels flag
+                        nx.draw_networkx_nodes(current_graph, pos, node_size=300, node_color='skyblue', ax=ax)
+                        nx.draw_networkx_edges(current_graph, pos, edge_color='gray', ax=ax)
+                        if st.session_state.show_network_labels:
+                             labels = {}
+                             for node in current_graph.nodes():
+                                 match = re.search(r'\d+$', str(node))
+                                 if match:
+                                     labels[node] = match.group(0)
+                                 else:
+                                     labels[node] = str(node)
+                             nx.draw_networkx_labels(current_graph, pos, labels=labels, font_size=8, ax=ax)
+
+                        ax.set_title(f"{network_method} Network ({input_matrix_type.capitalize()})")
+                    st.pyplot(fig)
+                except ImportError:
+                    st.error("Matplotlib or Igraph required for visualization/community detection. Please install them (`pip install matplotlib python-igraph`).")
+                except Exception as e:
+                    st.error(f"An error occurred during network visualization: {e}")
+                    st.code(traceback.format_exc())
+
+        else:
+            st.metric(f"{network_method} Network ({input_matrix_type})", "Not Constructed", "-")
 
 
 def generate_items(

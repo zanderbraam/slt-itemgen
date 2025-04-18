@@ -71,4 +71,88 @@
         *   Imported new embedding functions.
         *   Renamed session state to `sparse_embeddings_tfidf`.
         *   Split UI section 4 into "4.1 Dense Embeddings (OpenAI)" and "4.2 Sparse Embeddings (TF-IDF)" with separate buttons and status displays.
-*   Updated `PROJECTPLAN.md` to reflect TF-IDF approach for sparse embeddings and marked relevant Phase 2 tasks as complete. 
+*   Updated `PROJECTPLAN.md` to reflect TF-IDF approach for sparse embeddings and marked relevant Phase 2 tasks as complete.
+
+## [Date TBD] - Phase 3: EGA Foundation - Similarity Matrix
+
+*   Created `src/ega_service.py`.
+*   Implemented `calculate_similarity_matrix` function using `sklearn.metrics.pairwise.cosine_similarity` to handle both dense (NumPy) and sparse (SciPy) embeddings.
+*   Added type hints, docstrings, basic error handling, and a `__main__` test block to `src/ega_service.py`.
+*   Integrated `calculate_similarity_matrix` into `app.py`:
+    *   Added session state variables (`similarity_matrix_dense`, `similarity_matrix_sparse`).
+    *   Created a new UI Section 5 ("Calculate Similarity Matrix").
+    *   Added buttons to trigger similarity calculation based on available embeddings.
+    *   Added status display for calculated similarity matrices.
+    *   Updated "Clear Item History" to reset similarity matrices.
+*   Updated `PROJECTPLAN.md` to mark the similarity matrix calculation task as complete.
+
+## [Date TBD] - Phase 3: TMFG Network Construction & Visualization
+
+*   Implemented `construct_tmfg_network` function in `src/ega_service.py` using `networkx`.
+    *   Included logic based on the iterative TMFG algorithm (Massara et al., 2016).
+    *   Added docstrings, type hints, error handling, and tests to `__main__` block.
+*   Integrated TMFG construction into `app.py` (Section 6):
+    *   Added `networkx` and `matplotlib.pyplot` imports.
+    *   Added session state for TMFG graphs (`tmfg_graph_dense`, `tmfg_graph_sparse`).
+    *   Added UI elements (radio buttons for method/input, construct button).
+    *   Implemented logic to call `construct_tmfg_network` based on selected similarity matrix.
+    *   Displayed network status (node/edge count).
+    *   Added basic network visualization using `networkx.draw` and `matplotlib.pyplot` within an expander.
+    *   Updated "Clear Item History" to reset graph state.
+*   Updated `PROJECTPLAN.md` to mark the TMFG constructor task as complete.
+
+## [Date TBD] - Phase 3: EBICglasso Network Construction & Stability Fix
+
+*   Implemented `construct_ebicglasso_network` function in `src/ega_service.py`.
+    *   Used `sklearn.covariance.GraphicalLassoCV` to estimate sparse precision matrix.
+    *   Set `assume_centered=True` for use with similarity matrices.
+    *   Calculated partial correlations for edge weights.
+    *   Added docstrings, type hints, error handling, and tests.
+*   Integrated EBICglasso into `app.py` (Section 6):
+    *   Added "EBICglasso" option to network method selection.
+    *   Added session state for Glasso graphs (`glasso_graph_dense`, `glasso_graph_sparse`).
+    *   Implemented logic to call `construct_ebicglasso_network`.
+    *   Ensured status display and visualization work for EBICglasso.
+    *   Updated "Clear Item History" to reset Glasso graph state.
+*   Resolved persistent `FloatingPointError: Non SPD result` in `construct_ebicglasso_network`:
+    *   Applied `sklearn.covariance.shrunk_covariance` (Ledoit-Wolf) to the input similarity matrix.
+    *   Added scaled diagonal jitter (`epsilon * np.eye`, where `epsilon` is proportional to matrix std dev) after shrinkage to enforce positive-definiteness.
+    *   Implemented a retry mechanism: if `GraphicalLassoCV.fit` fails with `FloatingPointError`, increase jitter (`epsilon *= 10`) and retry fitting once.
+    *   Re-raised final errors as `RuntimeError` for better handling in the Streamlit UI.
+*   Updated `PROJECTPLAN.md` to mark the EBICglasso implementation task as complete.
+
+## [Date TBD] - Phase 3: Walktrap Community Detection & Visualization
+
+*   Implemented `detect_communities_walktrap` function in `src/ega_service.py`:
+    *   Converts `networkx.Graph` to `igraph.Graph`, handling node mapping and edge weights.
+    *   Uses `igraph.Graph.community_walktrap()` to perform detection.
+    *   Returns membership dictionary mapped back to original node IDs and the `igraph.VertexClustering` object.
+    *   Added error handling for `igraph` import, missing weights, and conversion/detection errors.
+    *   Included test cases in `__main__` block.
+*   Integrated community detection into `app.py` (Section 6):
+    *   Added session state variables for community membership and modularity for each graph type.
+    *   Ensured community state is cleared by "Clear Item History".
+    *   Added "Detect Communities" button, enabled only after a graph is constructed.
+    *   Implemented button logic to call `detect_communities_walktrap`, store results in session state, and handle potential errors (`ImportError`, `KeyError`, `RuntimeError`).
+    *   Updated network status display to include metrics for number of communities and modularity.
+    *   Modified `matplotlib` network plot to color nodes based on detected community membership using a colormap (`viridis`).
+    *   Added an optional legend to the plot showing community colors.
+*   Fixed `ImportError` in `app.py` by removing incorrect import of `filter_forbidden_words` (logic is handled within `parse_generated_items`).
+*   Updated `PROJECTPLAN.md` to mark Walktrap implementation and related UI/Plot tasks as complete.
+
+## [Date TBD] - Phase 3: Walktrap Robustness & Visualization Enhancements
+
+*   Refactored `detect_communities_walktrap` in `src/ega_service.py` to handle `igraph` error (`Vertex with zero strength found`) when using TMFG with sparse embeddings:
+    *   Identifies nodes with zero strength (sum of edge weights).
+    *   Runs Walktrap only on the subgraph containing positive-strength nodes.
+    *   Assigns isolated/zero-strength nodes to community ID `-1`.
+    *   Added `IGRAPH_AVAILABLE` flag check within `src/ega_service.py`.
+*   Enhanced network visualization in `app.py`:
+    *   Created `plot_network_with_communities` function.
+    *   Nodes colored based on community membership (using `viridis` colormap).
+    *   Isolated nodes (community `-1`) colored grey.
+    *   Added a legend differentiating communities and isolated nodes.
+*   Added UI toggle (radio buttons) in `app.py` to show/hide item numbers (node labels) on the network graph:
+    *   Added `show_network_labels` to session state.
+    *   Updated plotting functions (`plot_network_with_communities` and basic `nx.draw`) to respect the toggle.
+    *   Labels show extracted item number (e.g., "1" instead of "Item 1") when visible. 

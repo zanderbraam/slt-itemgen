@@ -85,12 +85,15 @@ graph TD
 - [x] Build dense matrices (OpenAI) & sparse matrices (TF-IDF); ~~L2‑norm & pruning~~ (TF-IDF handles sparsity)
 - [ ] Unit‑test deterministic caching & shape consistency
 
-### Phase 3 — Exploratory Graph Analysis
-- [ ] Implement TMFG network constructor
-- [ ] Implement EBICglasso variant (sklearn graphical‑lassoCV)
-- [ ] Walktrap community detection; calculate TEFI & NMI
-- [ ] UI: radio buttons for network type, real‑time metrics display
-- [ ] Plot: interactive network (pyvis / plotly) with colour‑by‑cluster
+### Phase 3 — Exploratory Graph Analysis (Initial)
+- [x] Calculate correlation/partial correlation matrix from embeddings (Input for network construction)
+- [x] Implement TMFG network constructor (likely using `networkx` and algorithms adapted for TMFG)
+- [x] Implement EBICglasso variant (using `sklearn.covariance.graphical_lasso` or `graphical_lassoCV`)
+- [x] Implement Walktrap community detection (using `python-igraph`)
+- [ ] Calculate network fit metrics: TEFI & NMI
+- [x] UI: Add radio buttons for selecting network type (TMFG/EBICglasso)
+- [x] UI: Display real-time metrics (TEFI, NMI, number of communities)
+- [x] Plot: Implement interactive network visualization (e.g., `pyvis` or `plotly`) showing items colored by detected community
 
 ### Phase 4 — Unique Variable Analysis
 - [ ] Compute wTO for full matrix
