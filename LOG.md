@@ -172,4 +172,20 @@
     *   `calculate_tefi` is called after successful community detection.
     *   Added a new metric display column for TEFI.
     *   NMI metric display shows "N/A" placeholder.
-    *   Updated "Clear Item History" to reset TEFI state. 
+    *   Updated "Clear Item History" to reset TEFI state.
+
+## [Date TBD] - App Workflow: Editable Item Pool & Confirmation Step
+
+*   Refactored Section 3 of `app.py` to improve workflow flexibility and testing:
+    *   Replaced the static display of generated items with an editable `st.text_area` (`item_pool_editor`) which serves as the primary item pool before confirmation.
+    *   Added `item_pool_text` and `items_confirmed` to `st.session_state`.
+    *   Modified "Generate New Items" button to append new unique items to the `item_pool_text` state, allowing incremental generation.
+    *   Added `parse_items_from_text` helper function to reliably extract items from the text area, handling list markers and empty lines.
+    *   Added a new primary button "Confirm & Use This Item Pool":
+        *   Reads and parses the content of `item_pool_text` using `parse_items_from_text`.
+        *   Sets `st.session_state.previous_items` to this final list.
+        *   Sets `st.session_state.items_confirmed = True`.
+        *   Clears all downstream state variables (embeddings, matrices, graphs, communities, metrics) to ensure subsequent steps use the confirmed items.
+        *   Disables the text area and generation/clearing buttons once confirmed.
+    *   Renamed "Clear Item History" to "Clear Item History & Start Over" and updated it to reset `item_pool_text` and `items_confirmed` state as well.
+    *   Updated subsequent sections (4, 5, 6) to be conditional on `st.session_state.items_confirmed == True`. 

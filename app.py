@@ -272,8 +272,8 @@ def main():
             height=100,
         )
 
-    # --- Section 3: Generate and View Items ---
-    st.header("3. Generate and View Items")
+    # --- Section 3: Generate, Edit, and Confirm Items ---
+    st.header("3. Generate, Edit, and Confirm Items")
 
     # Initialize session state
     if 'previous_items' not in st.session_state:
@@ -319,56 +319,54 @@ def main():
     # Add session state for label visibility toggle
     if "show_network_labels" not in st.session_state:
         st.session_state.show_network_labels = False # Default to False (Hide)
+    # Add state to track if item pool is confirmed
+    if "items_confirmed" not in st.session_state:
+        st.session_state.items_confirmed = False
+    # Add state to hold the text area content separately temporarily
+    if "item_pool_text" not in st.session_state:
+        st.session_state.item_pool_text = ""
 
-    # Add session state for TEFI results
-    if "tefi_tmfg_dense" not in st.session_state:
-        st.session_state.tefi_tmfg_dense = None
-    if "tefi_tmfg_sparse" not in st.session_state:
-        st.session_state.tefi_tmfg_sparse = None
-    if "tefi_glasso_dense" not in st.session_state:
-        st.session_state.tefi_glasso_dense = None
-    if "tefi_glasso_sparse" not in st.session_state:
-        st.session_state.tefi_glasso_sparse = None
-
-    col1, col2 = st.columns([1, 1])
-    with col1:
-        if st.button("Generate New Items", type="primary"):
+    # Display Generation Controls
+    col_gen1, col_gen2 = st.columns([1, 1])
+    with col_gen1:
+        if st.button("Generate New Items", type="primary", disabled=st.session_state.items_confirmed):
             if selected_option == "---":
                 st.warning("Please select a valid focus area.")
             else:
                 with st.spinner('Generating items...'):
+                    # Use current items from text area for duplicate checking
+                    current_items_in_text = parse_items_from_text(st.session_state.item_pool_text)
                     new_items = generate_items(
                         prompt_focus=selected_option,
                         n=n_items,
                         temperature=temperature,
-                        previous_items=st.session_state.previous_items,
-                        # Pass optional user inputs
+                        previous_items=current_items_in_text, # Pass current text items
                         positive_examples=user_positive_examples or None,
                         negative_examples=user_negative_examples or None,
                         forbidden_words_str=user_forbidden_words or None,
                     )
                     if new_items:
-                        st.session_state.previous_items.extend(new_items)
-                        st.success(f"{len(new_items)} new unique items generated.")
-                        # Rerun to update the display immediately after generation
-                        st.rerun()
+                        # Append to existing text area content
+                        existing_text = st.session_state.item_pool_text
+                        new_text = "\n".join(new_items)
+                        st.session_state.item_pool_text = f"{existing_text}\n{new_text}".strip()
+                        st.success(f"{len(new_items)} new unique items generated and appended below.")
+                        # Don't rerun here, let user confirm
                     else:
                         st.error("Failed to generate new items. Check OpenAI status or API key.")
 
-    with col2:
-        if st.button("Clear Item History"):
+    with col_gen2:
+        if st.button("Clear Item History & Start Over", disabled=st.session_state.items_confirmed):
+            # This button resets everything, including the text area
             st.session_state.previous_items = []
             st.session_state.dense_embeddings = None
-            st.session_state.sparse_embeddings_tfidf = None # Clear TF-IDF embeddings too
-            # Clear similarity matrices as well
+            st.session_state.sparse_embeddings_tfidf = None
             st.session_state.similarity_matrix_dense = None
             st.session_state.similarity_matrix_sparse = None
-            # Clear network graphs
             st.session_state.tmfg_graph_dense = None
             st.session_state.tmfg_graph_sparse = None
             st.session_state.glasso_graph_dense = None
             st.session_state.glasso_graph_sparse = None
-            # Clear community results
             st.session_state.communities_tmfg_dense = None
             st.session_state.modularity_tmfg_dense = None
             st.session_state.communities_tmfg_sparse = None
@@ -377,35 +375,78 @@ def main():
             st.session_state.modularity_glasso_dense = None
             st.session_state.communities_glasso_sparse = None
             st.session_state.modularity_glasso_sparse = None
-            # Clear TEFI results
             st.session_state.tefi_tmfg_dense = None
             st.session_state.tefi_tmfg_sparse = None
             st.session_state.tefi_glasso_dense = None
             st.session_state.tefi_glasso_sparse = None
-            # Clear label visibility toggle
             st.session_state.show_network_labels = False
-
-            st.success("Item generation history cleared.")
+            st.session_state.items_confirmed = False
+            st.session_state.item_pool_text = "" # Clear text area content too
+            st.success("Item generation history and all derived data cleared.")
             st.rerun()
 
-    # Display generated items
-    st.subheader("Generated Item Pool (Cumulative)")
-    if st.session_state.previous_items:
-        unique_items = list(dict.fromkeys(st.session_state.previous_items))
-        st.write(f"Total unique items: {len(unique_items)}")
-        st.text_area("Items:", "\n".join(f"{i+1}. {item}" for i, item in enumerate(unique_items)), height=300)
-    else:
-        st.info("No items generated yet in this session.")
+    # Editable Item Pool Text Area
+    st.subheader("Current Item Pool (Edit/Paste/Generate Here)")
+    st.session_state.item_pool_text = st.text_area(
+        "Items (one per line):",
+        value=st.session_state.item_pool_text, # Use the dedicated state variable
+        height=300,
+        key="item_pool_editor",
+        disabled=st.session_state.items_confirmed,
+        help="Enter your items here, one per line. You can generate items using the button above, paste a list, or edit manually. Click 'Confirm & Use This Item Pool' below to proceed."
+    )
+
+    # Display current item count from text area
+    items_in_textarea = parse_items_from_text(st.session_state.item_pool_text)
+    st.write(f"Items currently in editor: {len(items_in_textarea)}")
+
+    # --- Confirmation Button --- #
+    if st.button("Confirm & Use This Item Pool", type="primary", disabled=st.session_state.items_confirmed):
+        final_items = parse_items_from_text(st.session_state.item_pool_text)
+        if not final_items:
+            st.warning("Item pool is empty. Please add or generate items before confirming.")
+        else:
+            # Lock in the items
+            st.session_state.previous_items = final_items
+            # Clear downstream state
+            st.session_state.dense_embeddings = None
+            st.session_state.sparse_embeddings_tfidf = None
+            st.session_state.similarity_matrix_dense = None
+            st.session_state.similarity_matrix_sparse = None
+            st.session_state.tmfg_graph_dense = None
+            st.session_state.tmfg_graph_sparse = None
+            st.session_state.glasso_graph_dense = None
+            st.session_state.glasso_graph_sparse = None
+            st.session_state.communities_tmfg_dense = None
+            st.session_state.modularity_tmfg_dense = None
+            st.session_state.communities_tmfg_sparse = None
+            st.session_state.modularity_tmfg_sparse = None
+            st.session_state.communities_glasso_dense = None
+            st.session_state.modularity_glasso_dense = None
+            st.session_state.communities_glasso_sparse = None
+            st.session_state.modularity_glasso_sparse = None
+            st.session_state.tefi_tmfg_dense = None
+            st.session_state.tefi_tmfg_sparse = None
+            st.session_state.tefi_glasso_dense = None
+            st.session_state.tefi_glasso_sparse = None
+            # Mark as confirmed
+            st.session_state.items_confirmed = True
+            st.success(f"Item pool confirmed with {len(final_items)} items. Proceed to Section 4.")
+            st.rerun()
+
+    if st.session_state.items_confirmed:
+        st.success(f"Item pool is confirmed with {len(st.session_state.previous_items)} items. Generation and editing are disabled. Use 'Clear Item History' to start over.")
+
 
     # --- Section 4: Generate Embeddings --- #
     st.divider()
     st.header("4. Generate Embeddings")
 
-    if not st.session_state.previous_items:
-        st.info("Generate some items first (Section 3) before creating embeddings.")
+    if not st.session_state.items_confirmed:
+        st.info("Confirm an item pool in Section 3 before generating embeddings.")
     else:
         st.subheader("4.1 Dense Embeddings (OpenAI)")
-        st.info(f"Ready to generate dense embeddings for {len(st.session_state.previous_items)} unique items.")
+        st.info(f"Ready to generate dense embeddings for {len(st.session_state.previous_items)} confirmed items.")
         if st.button("Generate Dense Embeddings (OpenAI)", key="generate_dense_embeddings_button"):
             with st.spinner("Generating dense embeddings via OpenAI API (might take a moment)..."):
                 try:
@@ -462,8 +503,8 @@ def main():
     st.header("5. Calculate Similarity Matrix")
     st.write("Calculate pairwise cosine similarity between items based on their embeddings.")
 
-    if not st.session_state.previous_items:
-        st.info("Generate items (Section 3) and embeddings (Section 4) first.")
+    if not st.session_state.items_confirmed:
+        st.info("Confirm an item pool (Section 3) and generate embeddings (Section 4) first.")
     else:
         col_sim1, col_sim2 = st.columns(2)
 
@@ -524,8 +565,8 @@ def main():
     st.header("6. Construct Network & Detect Communities")
     st.write("Build a network graph from the similarity matrix and detect communities using Walktrap.")
 
-    if not st.session_state.previous_items or (st.session_state.similarity_matrix_dense is None and st.session_state.similarity_matrix_sparse is None):
-        st.info("Generate items, embeddings, and calculate a similarity matrix first (Sections 3-5).")
+    if not st.session_state.items_confirmed or (st.session_state.similarity_matrix_dense is None and st.session_state.similarity_matrix_sparse is None):
+        st.info("Confirm items (Section 3), generate embeddings (Section 4), and calculate a similarity matrix (Section 5) first.")
     else:
         # --- Network Construction Selection ---
         col_net1, col_net2 = st.columns(2)
@@ -745,6 +786,35 @@ def main():
 
         else:
             st.metric(f"{network_method} Network ({input_matrix_type})", "Not Constructed", "-")
+
+
+def parse_items_from_text(text_content: str) -> list[str]:
+    """Parses items from a multi-line text block.
+
+    - Splits by newline.
+    - Strips leading/trailing whitespace from each line.
+    - Removes common list markers (e.g., "1. ", "- ", "* ").
+    - Filters out empty lines.
+
+    Args:
+        text_content: The string content from the text area.
+
+    Returns:
+        A list of parsed item strings.
+    """
+    items = []
+    if not text_content:
+        return items
+
+    lines = text_content.strip().split('\n')
+    for line in lines:
+        cleaned_line = line.strip()
+        # Remove potential list markers using regex
+        cleaned_line = re.sub(r'^\\s*\\d+\\.\\s*', '', cleaned_line) # "1. "
+        cleaned_line = re.sub(r'^\\s*[-*]\\s*', '', cleaned_line)    # "- " or "* "
+        if cleaned_line:
+            items.append(cleaned_line)
+    return items
 
 
 def generate_items(
