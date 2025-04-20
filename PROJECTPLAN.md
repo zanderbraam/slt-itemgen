@@ -112,15 +112,15 @@ graph TD
     - [x] Utilize multiprocessing for efficiency.
 - [x] Implement iterative stability analysis and item removal:
     - [x] Calculate item stability: Proportion of bootstrap samples where an item is assigned to its original (pre-UVA/bootEGA) community.
-    - [ ] UI: Display stability scores (e.g., histogram or table).
+    - [x] UI: Display stability scores (e.g., histogram or table).
     - [x] UI: Add slider for stability threshold (default 0.75).
     - [x] Iteratively remove the item with the lowest stability below the threshold.
     - [x] Re-run the *entire* bootEGA process (resampling, analysis) on the reduced set until all items meet the threshold.
-    - [ ] UI: Display items removed due to instability at each iteration.
+    - [x] UI: Display items removed due to instability at each iteration.
 - [x] Final structure assessment:
     - [x] Run EGA one last time on the final set of stable items.
     - [x] Calculate final NMI based on this stable structure (comparing detected communities vs. original pre-filtering communities or a theoretical structure if applicable).
-    - [ ] UI: Display final NMI and compare it to the initial NMI from Phase 3.
+    - [x] UI: Display final NMI and compare it to the initial NMI from Phase 3.
 
 ### Phase 6 — Visualisation & Export
 - [ ] Collate plots into single PDF (`reportlab`)

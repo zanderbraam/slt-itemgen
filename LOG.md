@@ -248,3 +248,14 @@
     *   Fixed undefined `update_progress` callback and `initial_nmi` variable in `app.py`.
     *   Corrected session state key construction for fetching original community membership in `app.py`.
 *   **Note:** UI elements for displaying the detailed bootEGA *results* (stability scores, removed items list, NMI comparison) are implemented in the backend logic storage but not yet added to the Streamlit interface as per `PROJECTPLAN.md`.
+
+## [Date TBD] - Phase 5: bootEGA Results Display
+
+*   Implemented UI elements in `app.py` (Section 8) to display the results of the bootEGA analysis after successful completion:
+    *   Added a "bootEGA Results" subheader.
+    *   Display summary metrics using `st.metric` in columns (Items Before, Items Removed, Items Stable, Initial vs. Final NMI).
+    *   Display the log of removed items using `st.dataframe`.
+    *   Display the final stability scores for remaining items using `st.dataframe`.
+    *   Display the final list of stable items using a disabled `st.text_area`.
+*   Added conditional logic to show results only when `bootega_status` is "Completed", display an error message if "Error", and show an informational message otherwise.
+*   Updated `PROJECTPLAN.md` to mark Phase 5 UI display tasks as complete.

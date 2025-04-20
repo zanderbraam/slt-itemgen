@@ -723,8 +723,8 @@ def main():
                      st.metric("Modularity", "-", "-")
             with col_stat4:
                 # Display TEFI and NMI (NMI is often NaN initially)
-                tefi_display = f"{current_tefi:.4f}" if current_tefi is not None and not np.isnan(current_tefi) else "N/A"
-                nmi_display = f"{current_nmi:.4f}" if current_nmi is not None and not np.isnan(current_nmi) else "N/A"
+                tefi_display = f"{current_tefi:.4f}" if current_tefi is not None and not pd.isna(current_tefi) else "N/A"
+                nmi_display = f"{current_nmi:.4f}" if current_nmi is not None and not pd.isna(current_nmi) else "N/A"
                 st.metric("Fit Metrics", tefi_display, f"NMI: {nmi_display}")
 
             # --- Detect Communities Button ---
@@ -1155,6 +1155,75 @@ def main():
         finally:
             # Move the rerun here, AFTER all state updates and try/except/finally block
             st.rerun()
+
+
+    # --- Display bootEGA Results --- #
+    st.subheader("bootEGA Results")
+    bootega_status = st.session_state.get("bootega_status", "Not Run")
+
+    if bootega_status == "Completed":
+        stable_items = st.session_state.get("bootega_stable_items", [])
+        removed_log = st.session_state.get("bootega_removed_log", [])
+        stability_scores = st.session_state.get("bootega_final_stability_scores", {})
+        initial_nmi = st.session_state.get("bootega_initial_nmi_compared", np.nan)
+        final_nmi = st.session_state.get("bootega_final_nmi", np.nan)
+        items_before_bootega = len(st.session_state.get("uva_final_items", [])) # Items after UVA
+
+        # Format NMI scores for display using pd.isna for robustness
+        initial_nmi_display = f"{initial_nmi:.4f}" if not pd.isna(initial_nmi) else "N/A"
+        final_nmi_display = f"{final_nmi:.4f}" if not pd.isna(final_nmi) else "N/A"
+
+        st.success("bootEGA analysis completed successfully.")
+        res_col1, res_col2, res_col3, res_col4 = st.columns(4)
+        with res_col1:
+            st.metric("Items Before bootEGA", items_before_bootega)
+        with res_col2:
+            st.metric("Items Removed", len(removed_log))
+        with res_col3:
+            st.metric("Items Stable (Final)", len(stable_items))
+        with res_col4:
+            st.metric("NMI (Initial→Final)", final_nmi_display, delta=f"Initial: {initial_nmi_display}", delta_color="off")
+
+        # Display Removed Items Log
+        if removed_log:
+            st.write("**Items Removed During bootEGA Iterations:**")
+            removed_df = pd.DataFrame(removed_log, columns=["Removed Item", "Stability Score", "Iteration"])
+            st.dataframe(removed_df, use_container_width=True)
+        else:
+            st.write("No items were removed during bootEGA.")
+
+        # Display Final Stability Scores
+        if stability_scores and stable_items:
+            st.write("**Final Stability Scores for Stable Items:**")
+            scores_data = []
+            for item in stable_items: # Iterate through stable items to maintain order
+                score = stability_scores.get(item, np.nan)
+                scores_data.append({"Stable Item": item, "Final Stability Score": f"{score:.4f}"})
+
+            scores_df = pd.DataFrame(scores_data)
+            # Optional: Display histogram
+            # fig_hist, ax_hist = plt.subplots()
+            # scores_df['Final Stability Score'].astype(float).hist(ax=ax_hist, bins=10)
+            # ax_hist.set_title('Distribution of Final Stability Scores')
+            # st.pyplot(fig_hist)
+            st.dataframe(scores_df, use_container_width=True)
+
+            st.write("**Final Stable Item Pool:**")
+            final_items_text = "\n".join([f"{i+1}. {item}" for i, item in enumerate(stable_items)])
+            st.text_area("Stable Items", value=final_items_text, height=max(150, len(stable_items)*25), key="bootega_stable_items_display", disabled=True)
+
+        elif not stable_items:
+             st.warning("No items remained after bootEGA stability analysis.")
+
+    elif bootega_status == "Error":
+        st.error("bootEGA analysis failed.")
+        error_message = st.session_state.get("bootega_error", "No specific error message recorded.")
+        st.code(error_message)
+    elif bootega_status == "Running bootEGA... (This may take a while)":
+         st.info("bootEGA analysis is currently running. Please wait for completion.")
+         # Optionally keep the progress bar visible here if needed, but it's defined inside the button logic
+    else: # Not Run or other status
+        st.info("Run the bootEGA stability analysis using the button above to see results.")
 
 
     # ==============================================
