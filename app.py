@@ -2,6 +2,7 @@ import os
 import toml
 import re
 import traceback
+import logging
 
 import streamlit as st
 from openai import OpenAI, APIError
@@ -9,7 +10,6 @@ import networkx as nx
 import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
-import joblib
 
 from src.prompting import (
     DEFAULT_NEGATIVE_EXAMPLES,
@@ -17,7 +17,7 @@ from src.prompting import (
     create_system_prompt,
     create_user_prompt,
     parse_generated_items,
-    filter_unique_items
+    filter_unique_items,
 )
 from src.embedding_service import get_dense_embeddings, get_sparse_embeddings_tfidf, memory
 from src.ega_service import (
@@ -26,16 +26,15 @@ from src.ega_service import (
     construct_ebicglasso_network,
     detect_communities_walktrap,
     calculate_tefi,
-    remove_redundant_items_uva
+    calculate_nmi,
+    remove_redundant_items_uva,
+    perform_bootega_stability_analysis,
+    IGRAPH_AVAILABLE
 )
 
-# Attempt to import optional igraph for community detection
-try:
-    import igraph as ig
-    IGRAPH_AVAILABLE = True
-except ImportError:
-    IGRAPH_AVAILABLE = False
-    # No need to raise error here, handle gracefully later
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 # Setup joblib memory cache
 CACHE_DIR = "./.joblib_cache"
@@ -251,62 +250,101 @@ def main():
     if "similarity_error" not in st.session_state:
         st.session_state.similarity_error = None
 
-    # EGA State
-    if "ega_method" not in st.session_state:
-        st.session_state.ega_method = "TMFG"
-    if "ega_input" not in st.session_state:
-        st.session_state.ega_input = "Dense Embeddings"
-    if "tmfg_graph_dense" not in st.session_state:
-        st.session_state.tmfg_graph_dense = None
-    if "tmfg_graph_sparse" not in st.session_state:
-        st.session_state.tmfg_graph_sparse = None
-    if "glasso_graph_dense" not in st.session_state:
-        st.session_state.glasso_graph_dense = None
-    if "glasso_graph_sparse" not in st.session_state:
-        st.session_state.glasso_graph_sparse = None
-    if "ega_graph_error" not in st.session_state:
-        st.session_state.ega_graph_error = None
-    if "community_membership_dense_tmfg" not in st.session_state:
-        st.session_state.community_membership_dense_tmfg = None
-    if "community_membership_sparse_tmfg" not in st.session_state:
-        st.session_state.community_membership_sparse_tmfg = None
-    if "community_membership_dense_glasso" not in st.session_state:
-        st.session_state.community_membership_dense_glasso = None
-    if "community_membership_sparse_glasso" not in st.session_state:
-        st.session_state.community_membership_sparse_glasso = None
-    if "clustering_object_dense_tmfg" not in st.session_state:
-        st.session_state.clustering_object_dense_tmfg = None
-    if "clustering_object_sparse_tmfg" not in st.session_state:
-        st.session_state.clustering_object_sparse_tmfg = None
-    if "clustering_object_dense_glasso" not in st.session_state:
-        st.session_state.clustering_object_dense_glasso = None
-    if "clustering_object_sparse_glasso" not in st.session_state:
-        st.session_state.clustering_object_sparse_glasso = None
-    if "community_error" not in st.session_state:
-        st.session_state.community_error = None
+    # EGA State (Graphs, Communities, Metrics) - Ensure keys are distinct
+    graph_types = ['tmfg', 'glasso']
+    input_types = ['dense', 'sparse']
+    for g_type in graph_types:
+        for i_type in input_types:
+            key_prefix = f"{g_type}_{i_type}"
+            if f"graph_{key_prefix}" not in st.session_state:
+                st.session_state[f"graph_{key_prefix}"] = None
+            if f"community_membership_{key_prefix}" not in st.session_state:
+                st.session_state[f"community_membership_{key_prefix}"] = None
+            if f"community_clustering_{key_prefix}" not in st.session_state:
+                st.session_state[f"community_clustering_{key_prefix}"] = None
+            if f"tefi_{key_prefix}" not in st.session_state:
+                st.session_state[f"tefi_{key_prefix}"] = None
+            if f"nmi_{key_prefix}" not in st.session_state: # Placeholder NMI
+                st.session_state[f"nmi_{key_prefix}"] = None # Initialize NMI state
+            if f"ega_error_{key_prefix}" not in st.session_state:
+                st.session_state[f"ega_error_{key_prefix}"] = None
+
     if "show_network_labels" not in st.session_state:
-        st.session_state.show_network_labels = False # Default to hiding labels
-    if "tefi_dense_tmfg" not in st.session_state:
-        st.session_state.tefi_dense_tmfg = np.nan
-    if "tefi_sparse_tmfg" not in st.session_state:
-        st.session_state.tefi_sparse_tmfg = np.nan
-    if "tefi_dense_glasso" not in st.session_state:
-        st.session_state.tefi_dense_glasso = np.nan
-    if "tefi_sparse_glasso" not in st.session_state:
-        st.session_state.tefi_sparse_glasso = np.nan
-    # NMI will be added later
+         st.session_state.show_network_labels = False # Default to hide labels
 
     # UVA State
-    if "uva_remaining_items" not in st.session_state:
-        st.session_state.uva_remaining_items = None
-    if "uva_removed_items_log" not in st.session_state:
-        st.session_state.uva_removed_items_log = None
-    if "uva_threshold_used" not in st.session_state:
-        st.session_state.uva_threshold_used = 0.20 # Default threshold
-    if "uva_run_complete" not in st.session_state:
-        st.session_state.uva_run_complete = False
+    if "uva_final_items" not in st.session_state:
+        st.session_state.uva_final_items = None
+    if "uva_removed_log" not in st.session_state:
+        st.session_state.uva_removed_log = None
     if "uva_error" not in st.session_state:
         st.session_state.uva_error = None
+    if "uva_status" not in st.session_state:
+        st.session_state.uva_status = "Not Run"
+
+    # bootEGA State (New)
+    if "bootega_stable_items" not in st.session_state:
+        st.session_state.bootega_stable_items = None
+    if "bootega_final_stability_scores" not in st.session_state:
+        st.session_state.bootega_final_stability_scores = None
+    if "bootega_removed_log" not in st.session_state:
+        st.session_state.bootega_removed_log = None
+    if "bootega_final_nmi" not in st.session_state:
+        st.session_state.bootega_final_nmi = None
+    if "bootega_initial_nmi_compared" not in st.session_state: # Store the initial NMI for comparison
+        st.session_state.bootega_initial_nmi_compared = None
+    if "bootega_error" not in st.session_state:
+        st.session_state.bootega_error = None
+    if "bootega_status" not in st.session_state:
+        st.session_state.bootega_status = "Not Run"
+    if "bootega_final_community_membership" not in st.session_state:
+         st.session_state.bootega_final_community_membership = None # Store final communities after bootEGA
+
+    # --- Helper Function for Clearing State ---
+    def clear_downstream_state(from_section: int):
+        keys_to_clear = []
+        # Based on the section where clearing is triggered, clear subsequent sections' state
+        if from_section <= 4: # Clear Embeddings onwards
+             keys_to_clear.extend(['dense_embeddings', 'sparse_embeddings_tfidf', 'embedding_error'])
+        if from_section <= 5: # Clear Similarity onwards
+            keys_to_clear.extend(['similarity_matrix_dense', 'similarity_matrix_sparse', 'similarity_error'])
+        if from_section <= 6: # Clear EGA onwards
+            for g_type in graph_types:
+                for i_type in input_types:
+                    key_prefix = f"{g_type}_{i_type}"
+                    keys_to_clear.extend([
+                        f"graph_{key_prefix}",
+                        f"community_membership_{key_prefix}",
+                        f"community_clustering_{key_prefix}",
+                        f"tefi_{key_prefix}",
+                        f"nmi_{key_prefix}",
+                        f"ega_error_{key_prefix}"
+                    ])
+        if from_section <= 7: # Clear UVA onwards
+             keys_to_clear.extend(['uva_final_items', 'uva_removed_log', 'uva_error', 'uva_status'])
+        if from_section <= 8: # Clear bootEGA onwards (New)
+             keys_to_clear.extend([
+                 'bootega_stable_items', 'bootega_final_stability_scores',
+                 'bootega_removed_log', 'bootega_final_nmi',
+                 'bootega_initial_nmi_compared', 'bootega_error', 'bootega_status',
+                 'bootega_final_community_membership'
+             ])
+        # Add future sections here (e.g., export)
+
+        for key in keys_to_clear:
+            if key in st.session_state:
+                st.session_state[key] = None
+            # Reset status flags too
+            if key.endswith("_status"):
+                 st.session_state[key] = "Not Run"
+            elif key.endswith("_error"):
+                 st.session_state[key] = None
+
+        # Special reset for confirmation flag if clearing from Section 3 or earlier
+        if from_section <= 3:
+            st.session_state.items_confirmed = False
+            st.session_state.item_pool_text = "" # Reset editor text too
+            st.session_state.previous_items = []
 
     # --- Section 1: Select Focus and Parameters ---
     st.header("1. Select Focus and Parameters")
@@ -394,37 +432,7 @@ def main():
             st.session_state.previous_items = []
             st.session_state.items_confirmed = False
             # Clear downstream states
-            st.session_state.dense_embeddings = None
-            st.session_state.sparse_embeddings_tfidf = None
-            st.session_state.embedding_error = None
-            st.session_state.similarity_matrix_dense = None
-            st.session_state.similarity_matrix_sparse = None
-            st.session_state.similarity_error = None
-            st.session_state.tmfg_graph_dense = None
-            st.session_state.tmfg_graph_sparse = None
-            st.session_state.glasso_graph_dense = None
-            st.session_state.glasso_graph_sparse = None
-            st.session_state.ega_graph_error = None
-            st.session_state.community_membership_dense_tmfg = None
-            st.session_state.community_membership_sparse_tmfg = None
-            st.session_state.community_membership_dense_glasso = None
-            st.session_state.community_membership_sparse_glasso = None
-            st.session_state.clustering_object_dense_tmfg = None
-            st.session_state.clustering_object_sparse_tmfg = None
-            st.session_state.clustering_object_dense_glasso = None
-            st.session_state.clustering_object_sparse_glasso = None
-            st.session_state.community_error = None
-            st.session_state.tefi_dense_tmfg = np.nan
-            st.session_state.tefi_sparse_tmfg = np.nan
-            st.session_state.tefi_dense_glasso = np.nan
-            st.session_state.tefi_sparse_glasso = np.nan
-            # Clear UVA state
-            st.session_state.uva_remaining_items = None
-            st.session_state.uva_removed_items_log = None
-            st.session_state.uva_threshold_used = 0.20 # Reset to default
-            st.session_state.uva_run_complete = False
-            st.session_state.uva_error = None
-            # Clear potentially other future states here
+            clear_downstream_state(3)
             st.rerun()
 
     # Editable Item Pool Text Area
@@ -451,27 +459,7 @@ def main():
             # Lock in the items
             st.session_state.previous_items = final_items
             # Clear downstream state
-            st.session_state.dense_embeddings = None
-            st.session_state.sparse_embeddings_tfidf = None
-            st.session_state.similarity_matrix_dense = None
-            st.session_state.similarity_matrix_sparse = None
-            st.session_state.tmfg_graph_dense = None
-            st.session_state.tmfg_graph_sparse = None
-            st.session_state.glasso_graph_dense = None
-            st.session_state.glasso_graph_sparse = None
-            st.session_state.communities_tmfg_dense = None
-            st.session_state.modularity_tmfg_dense = None
-            st.session_state.communities_tmfg_sparse = None
-            st.session_state.modularity_tmfg_sparse = None
-            st.session_state.communities_glasso_dense = None
-            st.session_state.modularity_glasso_dense = None
-            st.session_state.communities_glasso_sparse = None
-            st.session_state.modularity_glasso_sparse = None
-            st.session_state.tefi_tmfg_dense = None
-            st.session_state.tefi_tmfg_sparse = None
-            st.session_state.tefi_glasso_dense = None
-            st.session_state.tefi_glasso_sparse = None
-            # Mark as confirmed
+            clear_downstream_state(4)
             st.session_state.items_confirmed = True
             st.success(f"Item pool confirmed with {len(final_items)} items. Proceed to Section 4.")
             st.rerun()
@@ -632,10 +620,12 @@ def main():
         method_prefix = "tmfg" if network_method == "TMFG" else "glasso"
 
         selected_sim_matrix = st.session_state.get(f"similarity_matrix_{matrix_suffix}")
-        graph_state_key = f"{method_prefix}_graph_{matrix_suffix}"
-        community_membership_key = f"communities_{method_prefix}_{matrix_suffix}"
-        modularity_key = f"modularity_{method_prefix}_{matrix_suffix}"
+        graph_state_key = f"graph_{method_prefix}_{matrix_suffix}"
+        community_membership_key = f"community_membership_{method_prefix}_{matrix_suffix}"
+        community_clustering_key = f"community_clustering_{method_prefix}_{matrix_suffix}"
         tefi_key = f"tefi_{method_prefix}_{matrix_suffix}" # Key for TEFI results
+        nmi_key = f"nmi_{method_prefix}_{matrix_suffix}"   # Key for NMI results
+        ega_error_key = f"ega_error_{method_prefix}_{matrix_suffix}"
 
         # --- Construct Network Button and Logic ---
         disable_construct_button = selected_sim_matrix is None
@@ -649,7 +639,11 @@ def main():
         if st.button(construct_button_label, key="construct_network_button", disabled=disable_construct_button):
             # Clear previous community results for this graph type if rebuilding
             st.session_state[community_membership_key] = None
-            st.session_state[modularity_key] = None
+            st.session_state[community_clustering_key] = None
+            st.session_state[tefi_key] = None # Clear TEFI too
+            st.session_state[nmi_key] = None # Clear NMI
+            st.session_state[ega_error_key] = None # Clear error
+            clear_downstream_state(7) # Clear UVA and bootEGA if graph is reconstructed
 
             item_labels = [f"Item {i+1}" for i in range(len(st.session_state.previous_items))]
             if len(item_labels) != selected_sim_matrix.shape[0]:
@@ -704,8 +698,9 @@ def main():
         st.subheader("Network Status & Community Detection")
         current_graph = st.session_state.get(graph_state_key)
         current_communities = st.session_state.get(community_membership_key)
-        current_modularity = st.session_state.get(modularity_key)
+        current_clustering = st.session_state.get(community_clustering_key) # Need clustering for modularity
         current_tefi = st.session_state.get(tefi_key) # Get current TEFI score
+        current_nmi = st.session_state.get(nmi_key) # Get current NMI score
 
         if current_graph is not None:
             col_stat1, col_stat2, col_stat3, col_stat4 = st.columns(4) # Add column for TEFI/NMI
@@ -714,41 +709,43 @@ def main():
                           f"{current_graph.number_of_nodes()} Nodes, {current_graph.number_of_edges()} Edges")
             with col_stat2:
                 if current_communities is not None:
-                    num_communities = len(set(current_communities.values()))
-                    st.metric("Communities (Walktrap)", f"{num_communities} Found", delta=None) # Removed delta
+                    # Calculate num communities excluding isolated (-1)
+                    num_communities = len(set(c for c in current_communities.values() if c != -1))
+                    st.metric("Communities (Walktrap)", f"{num_communities} Found", delta=None)
                 else:
                     st.metric("Communities (Walktrap)", "Not Detected", "-")
             with col_stat3:
-                if current_modularity is not None:
-                     st.metric("Modularity", f"{current_modularity:.4f}", delta=None) # Removed delta
+                # Modularity comes from the clustering object
+                modularity_val = current_clustering.modularity if current_clustering else None
+                if modularity_val is not None:
+                     st.metric("Modularity", f"{modularity_val:.4f}", delta=None)
                 else:
                      st.metric("Modularity", "-", "-")
             with col_stat4:
-                if current_tefi is not None:
-                     st.metric("TEFI", f"{current_tefi:.4f}")
-                else:
-                    # NMI cannot be calculated yet
-                    st.metric("TEFI / NMI", "N/A", "Requires communities")
-
+                # Display TEFI and NMI (NMI is often NaN initially)
+                tefi_display = f"{current_tefi:.4f}" if current_tefi is not None and not np.isnan(current_tefi) else "N/A"
+                nmi_display = f"{current_nmi:.4f}" if current_nmi is not None and not np.isnan(current_nmi) else "N/A"
+                st.metric("Fit Metrics", tefi_display, f"NMI: {nmi_display}")
 
             # --- Detect Communities Button ---
             st.caption("Use Walktrap algorithm to find communities within the constructed network.")
             if st.button("Detect Communities", key="detect_communities_button"):
-                with st.spinner("Running Walktrap community detection..."):
+                 with st.spinner("Running Walktrap community detection..."):
                     try:
-                        membership_dict, clustering = detect_communities_walktrap(
+                        membership_dict, clustering_obj = detect_communities_walktrap(
                             current_graph,
                             weights='weight' # Assuming edges have 'weight' attribute
                         )
-                        # Check if communities were successfully detected
-                        if membership_dict is not None and clustering is not None:
-                            st.session_state[community_membership_key] = membership_dict
-                            st.session_state[modularity_key] = clustering.modularity # Store modularity
+                        # Store results using consistent keys
+                        st.session_state[community_membership_key] = membership_dict
+                        st.session_state[community_clustering_key] = clustering_obj # Store clustering object
 
+                        # Check if communities were successfully detected
+                        if membership_dict is not None:
                             # Now calculate TEFI using the result and the original similarity matrix
                             try:
                                 tefi_score = calculate_tefi(selected_sim_matrix, membership_dict)
-                                st.session_state[tefi_key] = tefi_score
+                                st.session_state[tefi_key] = tefi_score # Use consistent key
                                 st.success(f"Walktrap detected {len(set(m for m in membership_dict.values() if m != -1))} communities. TEFI calculated: {tefi_score:.4f}")
                             except ValueError as ve:
                                 st.error(f"Error calculating TEFI: {ve}")
@@ -758,11 +755,16 @@ def main():
                                 st.session_state[tefi_key] = None # Reset TEFI state on error
                                 st.code(traceback.format_exc())
                         else:
-                            # Handle case where walktrap returns None (e.g., no positive strength nodes)
-                            st.session_state[community_membership_key] = membership_dict # Store potentially partial results (only -1s)
-                            st.session_state[modularity_key] = None
+                            # Handle case where walktrap returns None or empty dict
+                            st.session_state[community_membership_key] = membership_dict # Store potentially partial results
+                            st.session_state[community_clustering_key] = None
                             st.session_state[tefi_key] = None
                             st.warning("Walktrap completed, but no valid communities found or modularity could not be calculated. TEFI cannot be calculated.")
+
+                        # NMI calculation - Placeholder logic for initial run
+                        # In phase 6, we compare against a reference. Here, we might compare against itself (NMI=1) or store NaN.
+                        # Let's store NaN for now, as the meaningful NMI comes after bootEGA comparison.
+                        st.session_state[nmi_key] = np.nan
 
                         st.rerun() # Rerun to update metrics and plot color
                     except ImportError:
@@ -775,6 +777,10 @@ def main():
                     except Exception as e:
                          st.error(f"An unexpected error occurred during community detection: {e}")
                          st.code(traceback.format_exc())
+                         st.session_state[community_membership_key] = None # Clear state on unexpected error
+                         st.session_state[community_clustering_key] = None
+                         st.session_state[tefi_key] = None
+                         st.session_state[nmi_key] = None
 
 
             # --- Network Visualization --- #
@@ -835,134 +841,320 @@ def main():
     # ==============================================
     st.header("7. Unique Variable Analysis (UVA)")
 
-    # This section is only active if a network has been constructed (Section 6)
-    if (
-        st.session_state.tmfg_graph_dense is not None or
-        st.session_state.tmfg_graph_sparse is not None or
-        st.session_state.glasso_graph_dense is not None or
-        st.session_state.glasso_graph_sparse is not None
-    ):
+    # --- Check if *any* graph has been constructed --- #
+    any_graph_constructed = False
+    graph_types = ['tmfg', 'glasso']
+    input_types = ['dense', 'sparse']
+    for g_type in graph_types:
+        for i_type in input_types:
+            if st.session_state.get(f"graph_{g_type}_{i_type}") is not None:
+                any_graph_constructed = True
+                break
+        if any_graph_constructed:
+            break
+
+    # This section is only active if at least one network has been constructed
+    if any_graph_constructed:
         st.write("Apply Unique Variable Analysis (UVA) to remove redundant items based on Weighted Topological Overlap (wTO) calculated from the selected network structure.")
 
+        # Read the state directly from the radio button keys used in Section 6
+        selected_network_method_uva = st.session_state.get('network_method_select', 'TMFG')
+        selected_embedding_type_uva = st.session_state.get('input_matrix_select', 'Dense Embeddings')
+        method_prefix_check = "tmfg" if selected_network_method_uva == "TMFG" else "glasso"
+        matrix_suffix_check = "dense" if selected_embedding_type_uva == "Dense Embeddings" else "sparse"
+        dynamic_graph_key_check = f"graph_{method_prefix_check}_{matrix_suffix_check}"
+
+        # Check if the *specific* graph for the current selection exists
+        graph_to_use = st.session_state.get(dynamic_graph_key_check)
+        run_uva_disabled = False
+        sim_matrix_source_desc = ""
+
+        if graph_to_use is None:
+            st.warning(f"The currently selected graph configuration ({selected_network_method_uva} from {selected_embedding_type_uva}) has not been constructed yet in Section 6. Please construct it or select a configuration that has been constructed.")
+            run_uva_disabled = True # Disable the UVA button
+            sim_matrix_source_desc = "Selected graph not available"
+        else:
+            graph_type_str = method_prefix_check
+            sim_matrix_source_desc = f"{selected_network_method_uva} network (from {selected_embedding_type_uva})"
+            st.info(f"UVA will run using the: **{sim_matrix_source_desc}**")
+
+        # Display controls (slider always active, button potentially disabled)
         uva_threshold = st.slider(
             "wTO Redundancy Threshold",
             min_value=0.0, max_value=1.0, value=0.20, step=0.01,
             help="Items in pairs with wTO >= this threshold (calculated on the selected network) are considered redundant. The item with lower total connection strength in the pair is removed iteratively."
         )
 
-        # Determine which graph was last selected/constructed in Section 6
-        # Read the state directly from the radio button keys used in Section 6
-        selected_network_method_uva = st.session_state.get('network_method_select', 'TMFG') # Use correct key
-        selected_embedding_type_uva = st.session_state.get('input_matrix_select', 'Dense Embeddings') # Use correct key
+        if st.button("Run Unique Variable Analysis (UVA)", key="run_uva", disabled=run_uva_disabled):
+            # Ensure graph_to_use is valid before proceeding (should be, due to disabled state, but double-check)
+            if not graph_to_use:
+                 st.error(f"Cannot run UVA: The required graph ({sim_matrix_source_desc}) is not available. Please construct it in Section 6.")
+            elif not st.session_state.previous_items:
+                st.error("Cannot run UVA: No confirmed items found.")
+            else:
+                try:
+                    # Get the item labels corresponding to the nodes in the graph
+                    current_item_labels = list(graph_to_use.nodes())
 
-        graph_to_use = None
-        graph_type_str = ""
-        sim_matrix_source_desc = ""
+                    with st.spinner(f"Running UVA with threshold {uva_threshold:.2f} on {sim_matrix_source_desc}..."):
+                        remaining_items, removed_log = remove_redundant_items_uva(
+                            graph=graph_to_use,
+                            item_labels=current_item_labels,
+                            wto_threshold=uva_threshold,
+                            graph_type=graph_type_str # Use the determined graph type
+                        )
+                    st.session_state.uva_final_items = remaining_items
+                    st.session_state.uva_removed_log = removed_log
+                    st.session_state.uva_threshold = uva_threshold # Store the threshold used
+                    st.session_state.uva_input_source = sim_matrix_source_desc # Store which graph was used
+                    st.session_state.uva_status = "Completed"
+                    st.session_state.uva_error = None # Clear previous error
+                    clear_downstream_state(8) # Clear bootEGA results if UVA is re-run
+                    st.success(f"UVA completed using {sim_matrix_source_desc}.")
+                    st.rerun()
+                except (ValueError, TypeError, KeyError, RuntimeError) as e:
+                    st.error(f"Error during UVA calculation: {e}")
+                    st.exception(e)
+                    st.session_state.uva_final_items = None
+                    st.session_state.uva_removed_log = None
+                    st.session_state.uva_error = f"Error during UVA: {traceback.format_exc()}"
+                    st.session_state.uva_status = "Error"
+                except Exception as e:
+                    st.error(f"An unexpected error occurred during UVA: {e}")
+                    st.exception(e)
+                    st.session_state.uva_final_items = None
+                    st.session_state.uva_removed_log = None
+                    st.session_state.uva_error = f"Unexpected error during UVA: {traceback.format_exc()}"
+                    st.session_state.uva_status = "Error"
 
-        if selected_network_method_uva == "TMFG":
-            graph_type_str = "tmfg"
-            if selected_embedding_type_uva == "Dense Embeddings" and st.session_state.tmfg_graph_dense:
-                graph_to_use = st.session_state.tmfg_graph_dense
-                sim_matrix_source_desc = "TMFG network (from Dense embeddings)"
-            elif selected_embedding_type_uva == "Sparse Embeddings (TF-IDF)" and st.session_state.tmfg_graph_sparse:
-                graph_to_use = st.session_state.tmfg_graph_sparse
-                sim_matrix_source_desc = "TMFG network (from Sparse embeddings)"
-        elif selected_network_method_uva == "EBICglasso":
-            graph_type_str = "glasso"
-            if selected_embedding_type_uva == "Dense Embeddings" and st.session_state.glasso_graph_dense: # Check against correct string
-                graph_to_use = st.session_state.glasso_graph_dense
-                sim_matrix_source_desc = "EBICglasso network (from Dense embeddings)"
-            elif selected_embedding_type_uva == "Sparse Embeddings (TF-IDF)" and st.session_state.glasso_graph_sparse: # Check against correct string
-                graph_to_use = st.session_state.glasso_graph_sparse
-                sim_matrix_source_desc = "EBICglasso network (from Sparse embeddings)"
+        # --- Display UVA Results --- #
+        if st.session_state.uva_status == "Completed" and st.session_state.uva_final_items is not None:
+            st.subheader("UVA Results")
+            col1, col2, col3 = st.columns(3)
+            removed_count = len(st.session_state.uva_removed_log)
+            remaining_count = len(st.session_state.uva_final_items)
+            # Calculate initial count based on items passed *into* this UVA run
+            # We need to know how many items were in graph_to_use
+            initial_count = graph_to_use.number_of_nodes() if graph_to_use else (remaining_count + removed_count)
+            col1.metric("Items Before UVA", initial_count)
+            col2.metric("Items Removed", removed_count)
+            col3.metric("Items After UVA", remaining_count)
+            st.caption(f"Based on threshold wTO >= {st.session_state.get('uva_threshold', 'N/A'):.2f} using {st.session_state.get('uva_input_source', 'N/A')}")
 
-        if graph_to_use:
-            st.info(f"UVA will run using the: **{sim_matrix_source_desc}**")
+            if st.session_state.uva_removed_log:
+                st.write("**Items Removed by UVA:**")
+                removed_data = [{
+                    "Removed Item": item,
+                    f"Max wTO Trigger ({st.session_state.get('uva_threshold', 'N/A'):.2f})": f"{wto:.4f}"
+                    } for item, wto in st.session_state.uva_removed_log
+                ]
+                st.dataframe(pd.DataFrame(removed_data), use_container_width=True)
 
-            if st.button("Run Unique Variable Analysis (UVA)", key="run_uva"):
-                if not st.session_state.previous_items:
-                    st.error("Cannot run UVA: No confirmed items found.")
-                elif not graph_to_use:
-                     st.error(f"Cannot run UVA: The required graph ({sim_matrix_source_desc}) is not available. Please construct it in Section 6.")
-                else:
-                    try:
-                        # Get the item labels corresponding to the nodes in the graph
-                        # These should be the same as st.session_state.previous_items
-                        # but using graph.nodes() ensures consistency.
-                        current_item_labels = list(graph_to_use.nodes())
-
-                        with st.spinner(f"Running UVA with threshold {uva_threshold:.2f} on {sim_matrix_source_desc}..."):
-                            remaining_items, removed_log = remove_redundant_items_uva(
-                                graph=graph_to_use, # Pass the selected graph
-                                item_labels=current_item_labels,
-                                wto_threshold=uva_threshold,
-                                graph_type=graph_type_str # Specify 'tmfg' or 'glasso'
-                            )
-                        st.session_state.uva_remaining_items = remaining_items
-                        st.session_state.uva_removed_log = removed_log
-                        st.session_state.uva_threshold = uva_threshold
-                        st.session_state.uva_input_source = sim_matrix_source_desc # Store which graph was used
-                        st.success(f"UVA completed using {sim_matrix_source_desc}.")
-                        st.rerun() # Rerun to update display
-                    except (ValueError, TypeError, KeyError, RuntimeError) as e:
-                        st.error(f"Error during UVA calculation: {e}")
-                        st.exception(e)
-                        st.session_state.uva_remaining_items = None
-                        st.session_state.uva_removed_log = None
-                    except Exception as e:
-                        st.error(f"An unexpected error occurred during UVA: {e}")
-                        st.exception(e)
-                        st.session_state.uva_remaining_items = None
-                        st.session_state.uva_removed_log = None
-
-            # --- Display UVA Results --- #
-            if st.session_state.get("uva_remaining_items") is not None:
-                st.subheader("UVA Results")
-                col1, col2, col3 = st.columns(3)
-                removed_count = len(st.session_state.uva_removed_log)
-                remaining_count = len(st.session_state.uva_remaining_items)
-                initial_count = removed_count + remaining_count
-                col1.metric("Initial Items", initial_count)
-                col2.metric("Items Removed", removed_count)
-                col3.metric("Items Remaining", remaining_count)
-                st.caption(f"Based on threshold wTO >= {st.session_state.uva_threshold:.2f} using {st.session_state.uva_input_source}")
-
-                if st.session_state.uva_removed_log:
-                    st.write("**Items Removed by UVA:**")
-                    # Format log for display
-                    removed_data = [{
-                        "Removed Item": item,
-                        f"Max wTO Trigger ({st.session_state.uva_threshold:.2f})": f"{wto:.4f}"
-                        } for item, wto in st.session_state.uva_removed_log
-                    ]
-                    st.dataframe(pd.DataFrame(removed_data), use_container_width=True)
-
-                st.write("**Final Item Pool after UVA:**")
-                final_items_text = "\n".join([f"{i+1}. {item}" for i, item in enumerate(st.session_state.uva_remaining_items)])
-                st.text_area("Final Items", value=final_items_text, height=200, key="uva_final_items_display", disabled=True)
-            elif st.session_state.get("uva_error"): # Check if there was an error previously
-                 st.warning("UVA could not be completed due to an error.")
-
-        else:
-            st.warning("Please construct a network (TMFG or EBICglasso) in Section 6 before running UVA.")
+            st.write("**Final Item Pool after UVA:**")
+            final_items_text = "\n".join([f"{i+1}. {item}" for i, item in enumerate(st.session_state.uva_final_items)])
+            st.text_area("Final Items", value=final_items_text, height=200, key="uva_final_items_display", disabled=True)
+        elif st.session_state.uva_status == "Error":
+            st.error("UVA could not be completed due to an error. Check logs or adjust parameters.")
+            if st.session_state.uva_error:
+                 st.code(st.session_state.uva_error)
 
     else:
-        st.info("Construct a network in Section 6 to enable Unique Variable Analysis.")
+        st.info("Construct a network (TMFG or EBICglasso using selected embeddings) in Section 6 to enable Unique Variable Analysis.")
+
 
     # ==============================================
     # Section 8: bootEGA Stability Analysis
     # ==============================================
     st.header("8. bootEGA Stability Analysis")
 
-    # Placeholder - Requires Phase 5 implementation
-    if st.session_state.get("uva_remaining_items") is not None:
-        st.info("bootEGA implementation (Phase 5) is pending.")
-        st.write(f"Stability analysis would run on the {len(st.session_state.uva_remaining_items)} items remaining after UVA.")
-        # Add button placeholder if needed
-        # if st.button("Run bootEGA (Placeholder)"):
-        #    st.warning("bootEGA is not yet implemented.")
-    else:
-        st.info("Complete Unique Variable Analysis (UVA) in Section 7 to enable bootEGA.")
+    # --- Configuration --- # Display config info but get items directly
+    st.markdown("**Configuration Info (based on last UVA run):**")
+    network_method_info = st.session_state.get("network_method_select", "N/A") # Method selected when UVA was likely run
+    input_matrix_type_info = st.session_state.get("input_matrix_select", "N/A") # Embedding type selected
+    uva_threshold_info = st.session_state.get("uva_threshold", 0.20) # Threshold used for UVA
+    uva_input_source_info = st.session_state.get('uva_input_source', 'N/A') # Which graph was used for UVA
+
+    # --- Get actual items remaining after the last successful UVA run --- #
+    items_after_uva = st.session_state.get("uva_final_items") or []
+
+    st.write(f"- **UVA ran on:** {uva_input_source_info}") # Display which graph UVA used
+    st.write(f"- **UVA Threshold Used:** {uva_threshold_info:.2f}")
+    st.write(f"- **Items Remaining After UVA:** {len(items_after_uva)}")
+
+    col1_boot, col2_boot = st.columns(2)
+    with col1_boot:
+        n_bootstraps = st.number_input(
+            "Number of Bootstrap Samples (N)", min_value=10, max_value=1000, value=100, step=10,
+            key="bootega_n_bootstraps",
+            help="Number of bootstrap resamples to perform (e.g., 100-500)."
+        )
+    with col2_boot:
+        stability_threshold = st.slider(
+            "Item Stability Threshold", min_value=0.0, max_value=1.0, value=0.75, step=0.05,
+            key="bootega_stability_threshold",
+            help="Items with stability below this value will be removed (proportion, 0.0-1.0)."
+        )
+
+    # Simplified parallel toggle - always allow toggle, default based on common env var
+    default_parallel = not os.getenv("STREAMLIT_SERVER_RUNNING_ON", "").startswith("streamlit.app")
+    use_parallel = st.toggle("Use Parallel Processing", value=default_parallel, key="bootega_use_parallel",
+                            help="Use multiple CPU cores for faster resampling (may be unstable on Streamlit Cloud).")
+
+    # --- Execution --- #
+    if st.button("Run bootEGA Stability Analysis", key="run_bootega_button", disabled=not items_after_uva):
+
+        # --- Input Validation & Preparation ---
+        if not items_after_uva:
+            st.error("No items remaining after UVA (Section 7). Cannot run bootEGA.")
+            st.stop()
+
+        # Determine embedding type and fetch from state
+        matrix_suffix = "dense" if input_matrix_type_info == "Dense Embeddings" else "sparse"
+        embedding_key = f"{matrix_suffix}_embeddings" if matrix_suffix == "dense" else f"{matrix_suffix}_embeddings_tfidf"
+        selected_embedding_for_bootega = st.session_state.get(embedding_key)
+        if selected_embedding_for_bootega is None:
+            st.error(f"Required embeddings ('{embedding_key}') not found in session state. Please run Section 4.")
+            st.stop()
+
+        # Determine method prefix and fetch original community membership using CORRECT key construction
+        method_prefix = "tmfg" if network_method_info == "TMFG" else "glasso"
+        original_comm_key = f"community_membership_{method_prefix}_{matrix_suffix}"
+        original_community_membership = st.session_state.get(original_comm_key)
+        if original_community_membership is None:
+            st.error(f"Original community membership ('{original_comm_key}') not found. Please run Section 6.")
+            st.stop()
+
+        # Subset original community membership to only include items remaining after UVA
+        original_community_membership_subset = {
+            item: comm_id for item, comm_id in original_community_membership.items()
+            if item in items_after_uva
+        }
+        if not original_community_membership_subset:
+            st.error("Filtered original community membership is empty after UVA. Cannot run bootEGA.")
+            st.stop()
+
+        # Fetch initial NMI from EGA results (Section 6) CORRECTLY
+        initial_nmi_key = f"nmi_{method_prefix}_{matrix_suffix}"
+        initial_nmi = st.session_state.get(initial_nmi_key, np.nan) # Get the NMI from section 6
+
+        # Define Network/Walktrap Params
+        network_params = {"assume_centered": True} if method_prefix == "glasso" else {}
+        walktrap_params = {"steps": 4}
+
+        # Define Progress Callback for bootEGA - ENSURE this is defined
+        progress_bar = st.progress(0.0, text="Starting bootEGA...")
+        def update_progress(progress_fraction: float, message: str):
+            # Ensure fraction is between 0.0 and 1.0
+            clamped_fraction = max(0.0, min(1.0, progress_fraction / 100.0))
+            progress_bar.progress(clamped_fraction, text=message)
+
+        # Clear previous bootEGA results and downstream state
+        clear_downstream_state(8) # Clear bootEGA and Export state
+
+        st.session_state.bootega_status = "Running bootEGA... (This may take a while)"
+        st.session_state.bootega_error = None
+        # DO NOT rerun here - let the analysis run first
+        # st.rerun()
+
+        try:
+            # Run the bootEGA analysis
+            stable_items, item_stabilities, removed_log = perform_bootega_stability_analysis(
+                initial_items=items_after_uva,
+                original_embeddings=selected_embedding_for_bootega, # Pass the correct embeddings
+                original_community_membership=original_community_membership_subset, # Subsetted original communities
+                network_method=method_prefix, # Pass 'tmfg' or 'glasso'
+                network_params=network_params,
+                walktrap_params=walktrap_params,
+                stability_threshold=stability_threshold,
+                n_bootstrap=n_bootstraps,
+                sample_size=len(items_after_uva), # Sample size = number of items post-UVA
+                use_parallel=use_parallel,
+                max_workers=os.cpu_count() if use_parallel else 1,
+                progress_callback=update_progress, # Pass the callback
+                verbose=True # Enable verbose output for debugging
+            )
+
+            # --- Store Results in Session State ---
+            st.session_state.bootega_stable_items = stable_items
+            st.session_state.bootega_removed_log = removed_log
+            st.session_state.bootega_final_stability_scores = item_stabilities
+
+            # --- Perform Final EGA on Stable Items & Calculate Final NMI ---
+            st.session_state.bootega_final_community_membership = None
+            st.session_state.bootega_final_nmi = None
+            st.session_state.bootega_initial_nmi_compared = initial_nmi # Store the initial NMI fetched earlier
+
+            if stable_items:
+                # 1. Recalculate similarity matrix for stable items
+                # Ensure previous_items exists and is a list before finding indices
+                if isinstance(st.session_state.get('previous_items'), list):
+                    try:
+                        stable_indices = [st.session_state.previous_items.index(item) for item in stable_items if item in st.session_state.previous_items]
+                        if not stable_indices:
+                             raise ValueError("Could not find indices for any stable items.")
+                    except ValueError as e:
+                        st.warning(f"Error finding indices for stable items: {e}. Skipping final EGA/NMI.")
+                        stable_items = [] # Prevent further processing if indices failed
+                else:
+                    st.warning("Original item list ('previous_items') not found or invalid. Skipping final EGA/NMI.")
+                    stable_items = []
+
+                # Proceed only if we have stable items and valid indices
+                if stable_items:
+                    stable_embeddings = selected_embedding_for_bootega[stable_indices]
+                    final_similarity_matrix = calculate_similarity_matrix(stable_embeddings)
+
+                    # 2. Reconstruct the network
+                    if method_prefix == "tmfg":
+                        final_graph = construct_tmfg_network(final_similarity_matrix, item_labels=stable_items)
+                    else: # ebicglasso
+                        final_graph = construct_ebicglasso_network(final_similarity_matrix, item_labels=stable_items, **network_params)
+
+                    # 3. Re-detect communities
+                    final_community_membership, _ = detect_communities_walktrap(final_graph, **walktrap_params)
+                    st.session_state.bootega_final_community_membership = final_community_membership
+
+                    # 4. Calculate final NMI
+                    if final_community_membership:
+                        # Subset the *original* community membership (already subsetted for UVA items)
+                        # to include only the finally stable items
+                        original_membership_stable_subset = {
+                            item: original_community_membership_subset[item]
+                            for item in stable_items
+                            if item in original_community_membership_subset # Should always be true here
+                        }
+                        # Ensure both dictionaries have the same keys in the same order for NMI
+                        items_for_nmi = sorted(list(stable_items))
+                        labels_true = [original_membership_stable_subset.get(item, -99) for item in items_for_nmi]
+                        labels_pred = [final_community_membership.get(item, -99) for item in items_for_nmi]
+
+                        # Use try-except for NMI calculation as sklearn might not be installed
+                        try:
+                            final_nmi = calculate_nmi(labels_true, labels_pred)
+                            st.session_state.bootega_final_nmi = final_nmi
+                        except ImportError:
+                             st.warning("scikit-learn not installed. Cannot calculate final NMI.")
+                             st.session_state.bootega_final_nmi = np.nan
+                        except ValueError as ve:
+                             st.warning(f"Error calculating final NMI: {ve}")
+                             st.session_state.bootega_final_nmi = np.nan
+
+            st.session_state.bootega_status = "Completed"
+            progress_bar.progress(1.0, text="bootEGA Completed!") # Ensure progress bar finishes
+
+        except ImportError as e:
+            st.session_state.bootega_status = "Error"
+            st.session_state.bootega_error = f"ImportError during bootEGA: {e}. Ensure required libraries (e.g., igraph, scikit-learn) are installed."
+            logger.error(f"bootEGA ImportError: {traceback.format_exc()}")
+            progress_bar.progress(1.0, text="bootEGA Error")
+        except Exception as e:
+            st.session_state.bootega_status = "Error"
+            st.session_state.bootega_error = f"An unexpected error occurred during bootEGA: {e}"
+            logger.error(f"bootEGA Error: {traceback.format_exc()}")
+            progress_bar.progress(1.0, text="bootEGA Error")
+        finally:
+            # Move the rerun here, AFTER all state updates and try/except/finally block
+            st.rerun()
 
 
     # ==============================================
@@ -971,21 +1163,9 @@ def main():
     st.header("9. Export Results")
 
     # Placeholder - Requires Phase 6 implementation
-    if st.session_state.get("uva_remaining_items") is not None: # Check if UVA produced results (bootEGA might modify this later)
-        st.info("Export functionality (Phase 6) is pending.")
-        # Add button placeholders if needed
-        # st.download_button(
-        #     label="Download Final Items (.csv) (Placeholder)",
-        #     data="", # Replace with CSV data
-        #     file_name="final_items.csv",
-        #     mime="text/csv",
-        # )
-        # st.download_button(
-        #     label="Download Report (.pdf) (Placeholder)",
-        #     data="", # Replace with PDF data
-        #     file_name="ai_genie_report.pdf",
-        #     mime="application/pdf",
-        # )
+    if st.session_state.get("uva_final_items") is not None: # Check if UVA produced results (bootEGA might modify this later)
+        st.info("Export functionality (CSV/PDF report) is planned for Phase 6.")
+        # Add download buttons here later
     else:
         st.info("Complete the analysis pipeline (at least through UVA) to enable export.")
 

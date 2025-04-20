@@ -105,9 +105,22 @@ graph TD
 - [x] Display dropped items table; ~~allow user override (restore checkbox) [UI feature]~~ (Override not implemented yet)
 
 ### Phase 5 — bootEGA Stability
-- [ ] Bootstrap resampling engine (multiprocessing fallback)
-- [ ] Stability histogram & removal logic (threshold slider)
-- [ ] Re‑compute final NMI; compare vs. initial
+- [x] Implement bootstrap resampling engine:
+    - [x] Takes the item list remaining after UVA (Phase 4).
+    - [x] Performs N bootstrap iterations (e.g., 100, configurable).
+    - [x] In each iteration: samples items *with replacement*, re-runs the selected EGA pipeline (network construction + community detection from Phase 3) on the sample.
+    - [x] Utilize multiprocessing for efficiency.
+- [x] Implement iterative stability analysis and item removal:
+    - [x] Calculate item stability: Proportion of bootstrap samples where an item is assigned to its original (pre-UVA/bootEGA) community.
+    - [ ] UI: Display stability scores (e.g., histogram or table).
+    - [x] UI: Add slider for stability threshold (default 0.75).
+    - [x] Iteratively remove the item with the lowest stability below the threshold.
+    - [x] Re-run the *entire* bootEGA process (resampling, analysis) on the reduced set until all items meet the threshold.
+    - [ ] UI: Display items removed due to instability at each iteration.
+- [x] Final structure assessment:
+    - [x] Run EGA one last time on the final set of stable items.
+    - [x] Calculate final NMI based on this stable structure (comparing detected communities vs. original pre-filtering communities or a theoretical structure if applicable).
+    - [ ] UI: Display final NMI and compare it to the initial NMI from Phase 3.
 
 ### Phase 6 — Visualisation & Export
 - [ ] Collate plots into single PDF (`reportlab`)

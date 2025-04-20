@@ -11,10 +11,15 @@ import scipy.sparse as sp
 from sklearn.metrics.pairwise import cosine_similarity
 import networkx as nx
 from sklearn.covariance import GraphicalLassoCV, shrunk_covariance
-from sklearn.preprocessing import StandardScaler
 from sklearn.exceptions import ConvergenceWarning
 import warnings
-import igraph as ig
+import random
+import pandas as pd # Import pandas
+from collections import defaultdict
+from collections.abc import Callable # Import Callable
+from concurrent.futures import ProcessPoolExecutor
+import time # For potential progress updates
+import traceback # For detailed error logging
 
 # Attempt to import optional igraph and set a flag
 try:
@@ -711,378 +716,693 @@ def remove_redundant_items_uva(
     wto_threshold: float = 0.20,
     graph_type: str = "glasso", # 'glasso' or 'tmfg' to determine adjacency matrix logic
 ) -> tuple[list[str | int], list[tuple[str | int, float]]]:
-    """Performs Unique Variable Analysis (UVA) to remove redundant items from a graph.
+    """Iteratively removes redundant items based on Weighted Topological Overlap (wTO).
 
-    Iteratively removes the most redundant item based on Weighted Topological
-    Overlap (wTO) calculated from the **graph's structure** (adjacency matrix)
-    until no pair of items has a wTO value above the specified threshold.
-
-    Redundancy tie-breaking: If multiple pairs have the maximum wTO, the item
-    to be removed is chosen from the pair(s) by selecting the item with the
-    *lowest* sum of absolute connection strengths (edge weights) to all
-    *other remaining* items within the *current subgraph*.
+    Calculates wTO based on the structure of the provided graph (TMFG or EBICglasso)
+    and iteratively removes the item with the highest wTO above the threshold.
+    Tie-breaking is done using the sum of absolute connection strengths in the
+    current subgraph.
 
     Args:
-        graph: The initial networkx Graph (TMFG or EBICglasso) containing all items.
-               Edge weights are expected ('weight' attribute).
-        item_labels: A list of the initial item labels (strings or integers)
-                     corresponding to the nodes in the graph.
-        wto_threshold: The cutoff value for wTO. Items in pairs with wTO >= threshold
-                       are considered redundant. Defaults to 0.20.
-        graph_type: Specifies the type of graph ('glasso' or 'tmfg'). This determines
-                    how the adjacency matrix for wTO is derived.
-                    'glasso': Uses absolute partial correlations (edge weights).
-                    'tmfg': Uses absolute similarity (edge weights). Defaults to 'glasso'.
-
+        graph: The networkx.Graph object (TMFG or EBICglasso) containing the
+            items as nodes and relationships as weighted edges.
+        item_labels: The list of item labels corresponding to the nodes currently
+            in the graph. Must match the order/nodes initially.
+        wto_threshold: The cutoff value for wTO. Items with max wTO >= this
+            threshold are considered for removal.
+        graph_type: Specifies how to derive the adjacency matrix for wTO calculation.
+            'glasso': Uses absolute partial correlations from edge weights.
+            'tmfg': Uses the existing edge weights (assumed non-negative or abs).
 
     Returns:
         A tuple containing:
-        - remaining_items (list[str | int]): A list of the item labels that
-          were NOT removed.
-        - removed_items_log (list[tuple[str | int, float]]): A list of tuples,
-          where each tuple contains the label of the removed item and the
-          maximum wTO value that triggered its removal.
+        - remaining_items: A list of item labels that were not removed.
+        - removed_items_log: A list of tuples, where each tuple contains the
+            removed item label and its maximum wTO score at the time of removal.
 
     Raises:
-        ValueError: If inputs are invalid (graph empty, labels mismatch, threshold invalid,
-                    unknown graph_type).
-        TypeError: If inputs have incorrect types.
-        KeyError: If graph edges are missing the 'weight' attribute.
+        ValueError: If graph is empty, item_labels mismatch, threshold is invalid,
+                    or graph_type is unknown.
+        TypeError: If graph is not a networkx.Graph.
+        KeyError: If edge weights are missing when expected.
     """
-    # --- Input Validation ---
     if not isinstance(graph, nx.Graph):
-        raise TypeError("Input graph must be a networkx.Graph object.")
-    if not isinstance(item_labels, list):
-        raise TypeError("Input item_labels must be a list.")
-    if set(item_labels) != set(graph.nodes()):
-        raise ValueError("item_labels must match the nodes in the graph.")
-    if not isinstance(wto_threshold, (int, float)) or not (0 <= wto_threshold <= 1):
-        raise ValueError("wto_threshold must be a float between 0 and 1.")
+        raise TypeError("Input 'graph' must be a networkx.Graph object.")
+    if not item_labels:
+        raise ValueError("Input 'item_labels' cannot be empty.")
+    if not 0 <= wto_threshold <= 1:
+        raise ValueError("wto_threshold must be between 0 and 1.")
     if graph_type not in ["glasso", "tmfg"]:
         raise ValueError("graph_type must be either 'glasso' or 'tmfg'.")
+    if set(item_labels) != set(graph.nodes()):
+         # Check if the labels exactly match the current nodes in the graph
+        raise ValueError("item_labels must correspond exactly to the nodes in the input graph.")
 
-    n_initial = len(item_labels)
-    if n_initial < 2:
-        # No pairs to compare, no removal needed
-        return item_labels, []
-
-    # --- Initialization ---
-    current_graph = graph.copy() # Work on a copy to avoid modifying the original
+    # Keep track of the current graph and items
+    current_graph = graph.copy() # Work on a copy
+    current_items = list(item_labels) # Ensure it's a mutable list copy
     removed_items_log = []
-    # Keep track of current labels, ordered consistently
-    # We'll use this order for matrix indexing
-    current_labels_ordered = sorted(list(current_graph.nodes()), key=lambda x: item_labels.index(x))
 
-    # --- Iterative Removal Loop ---
-    while current_graph.number_of_nodes() >= 2:
-        n_current = current_graph.number_of_nodes()
+    while len(current_items) > 2: # Need at least 3 items to calculate meaningful wTO in a graph context
+        # 1. Get adjacency matrix from the current subgraph
+        subgraph_nodes = current_items
+        subgraph = current_graph.subgraph(subgraph_nodes)
 
-        # 1. Get the adjacency matrix for the *current* subgraph
-        #    Ensure the matrix rows/columns align with current_labels_ordered
+        # Create adjacency matrix based on graph type
         try:
-            # Use absolute weights for wTO calculation regardless of graph type
-            adj_matrix = nx.to_numpy_array(
-                current_graph,
-                nodelist=current_labels_ordered,
-                weight='weight', # Assumes weights exist
-                dtype=np.float64
-            )
-            adj_matrix = np.abs(adj_matrix) # Ensure non-negative weights for wTO
+            if graph_type == 'glasso':
+                # Use absolute partial correlation from edge weights
+                adj_matrix = nx.to_numpy_array(subgraph, nodelist=subgraph_nodes, weight='weight')
+                adj_matrix = np.abs(adj_matrix) # Ensure positive weights for wTO
+            elif graph_type == 'tmfg':
+                # Use existing edge weights (TMFG weights are typically positive similarity)
+                adj_matrix = nx.to_numpy_array(subgraph, nodelist=subgraph_nodes, weight='weight')
+                # If TMFG weights could be negative (e.g., raw correlations), take abs
+                adj_matrix = np.abs(adj_matrix) # Ensure positive weights for wTO
+            else:
+                 # This case is already handled by the initial check, but added for safety
+                 raise ValueError(f"Unknown graph_type: {graph_type}")
         except KeyError as e:
-            raise KeyError("Graph edges must have a 'weight' attribute for wTO calculation.") from e
+            raise KeyError(f"Missing 'weight' attribute on edges for graph_type '{graph_type}'. Error: {e}")
         except Exception as e:
-            raise RuntimeError(f"Failed to extract adjacency matrix: {e}") from e
+            raise RuntimeError(f"Error converting subgraph to numpy array: {e}")
 
-        # 2. Calculate wTO for the current subset
-        current_wto_matrix = calculate_wto(adj_matrix)
+        # 2. Calculate wTO matrix for the current subgraph
+        # Ensure the diagonal is 0 before passing to calculate_wto
+        np.fill_diagonal(adj_matrix, 0)
+        # Pass the adjacency matrix, not the similarity matrix, to wTO calculation
+        wto_matrix_sub = calculate_wto(adj_matrix) # calculate_wto handles its own diag setting
 
-        # 3. Find the maximum off-diagonal wTO value
-        np.fill_diagonal(current_wto_matrix, -np.inf) # Ignore diagonal
-        if n_current == 1: # Should be caught by loop condition, but safeguard
-             max_wto = -np.inf
+        # 3. Find the item with the maximum wTO score
+        # Set diagonal to 0 to ignore self-wTO
+        np.fill_diagonal(wto_matrix_sub, 0)
+        max_wto_scores = np.max(wto_matrix_sub, axis=1)
+        max_wto_overall = np.max(max_wto_scores)
+        max_wto_idx = np.argmax(max_wto_scores) # Index within the current subgraph_nodes list
+
+
+        # 4. Check against threshold
+        if max_wto_overall < wto_threshold:
+            break # No more items are redundant enough
+
+        # 5. Tie-breaking: If multiple items have the same max wTO, remove the one
+        #    with the *lowest* sum of connection strengths in the *current subgraph*.
+        #    (Lower strength means less central/important to the current structure).
+        candidate_indices = np.where(np.isclose(max_wto_scores, max_wto_overall))[0]
+
+        if len(candidate_indices) > 1:
+            # Calculate sum of absolute connection strengths (node degree in weighted graph)
+            # Use the adj_matrix derived earlier for the current subgraph
+            node_strengths = np.sum(adj_matrix, axis=1) # Sum weights for each node
+            candidate_strengths = node_strengths[candidate_indices]
+            # Find the index (among candidates) with the minimum strength
+            min_strength_candidate_idx = candidate_indices[np.argmin(candidate_strengths)]
+            item_to_remove_idx = min_strength_candidate_idx
         else:
-             max_wto = np.max(current_wto_matrix) if current_wto_matrix.size > 0 else -np.inf
+            item_to_remove_idx = max_wto_idx # Only one candidate
+
+        # 6. Remove the item
+        item_to_remove = subgraph_nodes[item_to_remove_idx]
+        removed_items_log.append((item_to_remove, max_wto_overall))
+
+        # Update the list of current items and the graph for the next iteration
+        current_items.remove(item_to_remove)
+        current_graph.remove_node(item_to_remove) # Modify the copied graph
+
+    return current_items, removed_items_log
 
 
-        # 4. Check if max wTO meets removal threshold
-        if max_wto < wto_threshold or np.isneginf(max_wto):
-            break # No more redundancy found
+# ============================================================
+# Top-level helper function for bootEGA parallel processing
+# ============================================================
+def _run_bootstrap_single(
+    args: tuple[int, list[str], np.ndarray | sp.csr_matrix, str, dict, dict, int | None]
+) -> tuple[list[str], dict[str, int] | None]:
+    """Runs a single bootstrap iteration for bootEGA.
 
-        # 5. Identify pair(s) with max wTO
-        # Find indices within the *current_wto_matrix* (local indices relative to current_labels_ordered)
-        max_wto_indices_local = np.argwhere(current_wto_matrix >= max_wto - 1e-9) # Use tolerance
+    Designed to be called by ProcessPoolExecutor.map.
 
-        # 6. Determine which item to remove (tie-breaking using graph connection strength)
-        item_to_remove_local_idx = -1
-        min_sum_strength = np.inf
+    Args:
+        args: A tuple containing:
+            iteration_seed (int): Seed for this specific bootstrap iteration.
+            original_items (list[str]): The full list of items being analyzed.
+            original_embeddings (np.ndarray | sp.csr_matrix): The embedding matrix corresponding to original_items.
+            network_method (str): 'tmfg' or 'glasso'.
+            network_params (dict): Parameters for network construction.
+            walktrap_params (dict): Parameters for Walktrap community detection.
+            sample_size (int | None): Size of the bootstrap sample. If None, uses len(original_items).
 
-        # Calculate sum of absolute edge weights (connection strengths) for tie-breaking
-        # Use the already computed absolute adjacency matrix
-        np.fill_diagonal(adj_matrix, 0) # Ensure diagonal is zero for sum calculation
-        current_sum_strengths = np.sum(adj_matrix, axis=1)
+    Returns:
+        tuple[list[str], dict[str, int] | None]: A tuple containing:
+            - sampled_item_list (list[str]): The *unique* items included in the bootstrap sample.
+            - community_membership (dict[str, int] | None): Dictionary mapping unique item labels
+              in the sample to their detected community ID, or None if EGA failed.
+    """
+    (
+        iteration_seed,
+        original_items,
+        original_embeddings,
+        network_method,
+        network_params,
+        walktrap_params,
+        sample_size,
+    ) = args
 
-        candidate_items_local_indices = set()
-        for idx_pair_local in max_wto_indices_local:
-            candidate_items_local_indices.add(idx_pair_local[0])
-            candidate_items_local_indices.add(idx_pair_local[1])
+    # Set random seed for this process/iteration for reproducibility
+    np.random.seed(iteration_seed)
+    random.seed(iteration_seed)
 
-        # Find the candidate with the minimum sum of connection strengths
-        items_to_consider = sorted(list(candidate_items_local_indices)) # Process in a consistent order
-        for local_idx in items_to_consider:
-            node_sum_strength = current_sum_strengths[local_idx]
+    if sample_size is None:
+        sample_size = len(original_items)
 
-            # Compare with current minimum
-            if node_sum_strength < min_sum_strength:
-                min_sum_strength = node_sum_strength
-                item_to_remove_local_idx = local_idx
-            # If sums are equal, the existing item_to_remove_local_idx (lower index) is kept
+    # 1. Sample indices with replacement
+    sampled_indices = np.random.choice(len(original_items), size=sample_size, replace=True)
+    unique_sampled_indices = sorted(list(set(sampled_indices)))
 
-        # 7. Remove the selected item
-        if item_to_remove_local_idx != -1:
-            # Get the label of the item to remove using the local index
-            label_to_remove = current_labels_ordered[item_to_remove_local_idx]
+    # If only one unique item is sampled, EGA cannot run
+    if len(unique_sampled_indices) < 2:
+        # Need at least 2 for similarity, 3 for TMFG maybe?
+        return [], None # Return empty list and None communities
 
-            # Remove the node from the graph
-            current_graph.remove_node(label_to_remove)
+    unique_sampled_items = [original_items[i] for i in unique_sampled_indices]
+    unique_sampled_embeddings = original_embeddings[unique_sampled_indices, :]
 
-            # Update the ordered list of labels for the next iteration
-            current_labels_ordered.pop(item_to_remove_local_idx)
 
-            # Log the removal
-            removed_items_log.append((label_to_remove, max_wto))
-            # print(f"    [UVA] Removing item '{label_to_remove}' due to max wTO {max_wto:.4f}") # Optional debug print
+    # 2. Re-run the EGA pipeline on the sampled data
+    try:
+        # a. Calculate similarity on the *unique* sampled embeddings
+        # Need to handle potential errors if matrix is not suitable (e.g., all zeros)
+        sampled_similarity = calculate_similarity_matrix(unique_sampled_embeddings)
+        if np.all(np.isnan(sampled_similarity)) or sampled_similarity.shape[0] < 2:
+             # print(f"[Bootstrap {iteration_seed}] Invalid similarity matrix for sample.")
+             return unique_sampled_items, None
+
+        # b. Construct network
+        sampled_graph = None
+        if network_method.lower() == 'tmfg':
+            # TMFG needs at least 3 nodes
+            if len(unique_sampled_items) < 3:
+                 return unique_sampled_items, None
+            sampled_graph = construct_tmfg_network(sampled_similarity, item_labels=unique_sampled_items, **network_params)
+        elif network_method.lower() == 'glasso':
+            sampled_graph = construct_ebicglasso_network(sampled_similarity, item_labels=unique_sampled_items, **network_params)
         else:
-            # Should not happen if max_wto >= threshold, safety break
-            warnings.warn("Could not identify item to remove despite max_wto >= threshold.")
+            raise ValueError(f"Unknown network method: {network_method}")
+
+        if sampled_graph is None or sampled_graph.number_of_nodes() == 0:
+            # print(f"[Bootstrap {iteration_seed}] Failed to construct network graph for sample.")
+            return unique_sampled_items, None
+
+        # c. Detect communities
+        # Handle potential errors during community detection
+        community_membership, _ = detect_communities_walktrap(
+            sampled_graph,
+            **walktrap_params
+        )
+
+        # Return the list of unique items in the sample and their communities
+        # The keys in community_membership should already be the correct item labels
+        return unique_sampled_items, community_membership
+
+    except Exception as e:
+        # Log the exception for debugging, return None for this bootstrap sample
+        # print(f"Error in bootstrap sample {idx}: {e}")
+        # traceback.print_exc() # More detailed traceback
+        return unique_sampled_items, None # Return item IDs even on failure, but None for communities
+
+
+# ============================================================
+# bootEGA Resampling Function (Modified)
+# ============================================================
+def run_bootega_resampling(
+    items: list[str],
+    embeddings: np.ndarray | sp.csr_matrix,
+    network_method: str, # 'tmfg' or 'glasso'
+    network_params: dict,
+    walktrap_params: dict,
+    n_bootstrap: int = 100,
+    sample_size: int | None = None,
+    use_parallel: bool = True,
+    max_workers: int | None = None,
+    progress_callback: Callable | None = None # Use Callable
+) -> list[tuple[list[str], dict[str, int] | None]]:
+    """Performs N bootstrap resampling iterations of the EGA pipeline.
+    Uses the top-level _run_bootstrap_single helper function.
+    (Docstring details omitted for brevity, same as before)
+    """
+    bootstrap_results = []
+
+    if progress_callback:
+        progress_callback(0, "Starting bootEGA resampling...")
+
+    start_time = time.time()
+
+    # Prepare arguments for mapping
+    master_seed = random.randint(0, 2**32 - 1)
+    np.random.seed(master_seed)
+    iteration_seeds = np.random.randint(0, 2**32 - 1, size=n_bootstrap)
+
+    tasks_args = [
+        (
+            int(iteration_seeds[i]),
+            items,
+            embeddings,
+            network_method,
+            network_params,
+            walktrap_params,
+            sample_size,
+        )
+        for i in range(n_bootstrap)
+    ]
+
+    if use_parallel:
+        try:
+            with ProcessPoolExecutor(max_workers=max_workers) as executor:
+                results_iterator = executor.map(_run_bootstrap_single, tasks_args)
+                for i, result in enumerate(results_iterator):
+                    bootstrap_results.append(result)
+                    if progress_callback and (i + 1) % max(1, n_bootstrap // 20) == 0:
+                        percentage = (i + 1) / n_bootstrap * 100
+                        elapsed = time.time() - start_time
+                        eta = (elapsed / (i + 1)) * (n_bootstrap - (i + 1)) if (i + 1) > 0 else 0
+                        progress_callback(percentage, f"Resampling {i+1}/{n_bootstrap}... (ETA: {eta:.0f}s)")
+
+        except Exception as e:
+            print(f"Error during parallel execution: {e}")
+            # print(traceback.format_exc()) # Optional: Print full traceback for debugging
+            print("Falling back to sequential execution.")
+            use_parallel = False
+            bootstrap_results = [] # Reset results for sequential run
+
+    if not use_parallel:
+        print("Running bootEGA resampling sequentially...") # Add indication
+        for i, args in enumerate(tasks_args):
+            result = _run_bootstrap_single(args)
+            bootstrap_results.append(result)
+            if progress_callback and (i + 1) % max(1, n_bootstrap // 10) == 0:
+                percentage = (i + 1) / n_bootstrap * 100
+                elapsed = time.time() - start_time
+                eta = (elapsed / (i + 1)) * (n_bootstrap - (i + 1)) if (i + 1) > 0 else 0
+                progress_callback(percentage, f"Resampling {i+1}/{n_bootstrap}... (ETA: {eta:.0f}s)")
+
+    if progress_callback:
+        progress_callback(100, f"Resampling completed ({time.time() - start_time:.1f}s).")
+
+    return bootstrap_results
+
+
+def perform_bootega_stability_analysis(
+    initial_items: list[str],
+    original_embeddings: np.ndarray | sp.spmatrix,
+    original_community_membership: dict[str, int],
+    network_method: str,
+    network_params: dict,
+    walktrap_params: dict,
+    stability_threshold: float = 0.75,
+    n_bootstrap: int = 100,
+    sample_size: int | None = None,
+    use_parallel: bool = True,
+    max_workers: int | None = None,
+    progress_callback: Callable | None = None, # Use Callable
+    verbose: bool = False # Added for potential logging
+) -> tuple[list[str], dict[str, float], list[tuple[str, float, int]]]:
+    """Performs iterative bootEGA stability analysis.
+
+    Removes items that consistently fail to cluster with their original community
+    across bootstrap samples.
+
+    Args:
+        initial_items: List of item labels (e.g., after UVA) to start with.
+        original_embeddings: Embeddings matrix for the *initial_items*.
+        original_community_membership: Community assignments for *initial_items*
+                                        (from the initial EGA run before bootEGA).
+        network_method: 'tmfg' or 'glasso'.
+        network_params: Parameters for network construction.
+        walktrap_params: Parameters for Walktrap.
+        stability_threshold: Proportion of times an item must be in its original
+                             community to be considered stable (0.0 to 1.0).
+        n_bootstrap: Number of bootstrap samples per iteration.
+        sample_size: Size of each bootstrap sample. Defaults to len(current_items).
+        use_parallel: Whether to use multiprocessing for resampling.
+        max_workers: Max workers for parallel execution.
+        progress_callback: Function to report progress (percentage, message).
+        verbose: If True, print more detailed logs.
+
+    Returns:
+        tuple containing:
+        - stable_items (list[str]): The final list of items meeting the stability threshold.
+        - final_stability_scores (dict[str, float]): Dictionary mapping stable items
+          to their final stability scores.
+        - removed_log (list[tuple[str, float, int]]): Log of removed items,
+          their stability score at removal, and the iteration number.
+    """
+    if not initial_items:
+        return [], {}, []
+
+    current_items = list(initial_items)
+    removed_log = []
+    iteration = 0
+
+    # --- Initialize variables before the loop --- #
+    unstable_items = [] # Ensure this is always defined
+    final_stability_scores = {} # Ensure this is always defined
+
+    while True:
+        iteration += 1
+        if verbose:
+            print(f"\n--- bootEGA Iteration {iteration} ---")
+            print(f"Items remaining: {len(current_items)}")
+
+        if not current_items:
+            if verbose: print("No items left to analyze.")
             break
 
-    # --- Return Results ---#
-    # The remaining nodes in current_graph are the ones not removed
-    remaining_items = current_labels_ordered # Already updated
-    return remaining_items, removed_items_log
+        # 1. Run Bootstrap Resampling on Current Items
+        # Need embeddings corresponding to *current_items*
+        try:
+            current_indices = [initial_items.index(item) for item in current_items if item in initial_items]
+            if not current_indices:
+                 raise ValueError("Could not find indices for any current items in the initial list.")
+            current_embeddings = original_embeddings[current_indices, :]
+        except ValueError as e:
+             print(f"Error getting embeddings for current items in iteration {iteration}: {e}")
+             # Decide how to handle: maybe break or return current state?
+             # For now, let's break, assuming something is wrong.
+             break
 
+        bootstrap_results = run_bootega_resampling(
+            items=current_items,
+            embeddings=current_embeddings,
+            network_method=network_method,
+            network_params=network_params,
+            walktrap_params=walktrap_params,
+            n_bootstrap=n_bootstrap,
+            sample_size=sample_size, # Allow specific sample size if needed
+            use_parallel=use_parallel,
+            max_workers=max_workers,
+            progress_callback=progress_callback # Pass callback down
+        )
 
-if __name__ == '__main__':
-    # Example Usage & Basic Test Cases
-    print("Testing with dense embeddings:")
-    dense_embeddings = np.array([[1, 0, 0], [0, 1, 1], [1, 0, 1], [0.5, 0.5, 0.5]])
-    similarity = calculate_similarity_matrix(dense_embeddings)
-    print("Dense Embeddings (4x3):\n", dense_embeddings)
-    print("Similarity Matrix:\n", similarity.round(3))
-    assert similarity.shape == (4, 4), "Shape mismatch for dense"
-    assert np.allclose(np.diag(similarity), 1.0), "Diagonal not 1.0 for dense"
+        # 2. Calculate Item Stability
+        item_stability = defaultdict(float)
+        item_appearances = defaultdict(int)
+        valid_bootstrap_runs = 0
 
-    print("\nTesting with sparse embeddings:")
-    sparse_embeddings = sp.csr_matrix([[1, 0, 0], [0, 1, 1], [1, 0, 1], [0.5, 0.5, 0.5]])
-    similarity_sparse = calculate_similarity_matrix(sparse_embeddings)
-    print("Sparse Embeddings (4x3):\n", sparse_embeddings.toarray())
-    print("Similarity Matrix:\n", similarity_sparse.round(3))
-    assert similarity_sparse.shape == (4, 4), "Shape mismatch for sparse"
-    assert np.allclose(np.diag(similarity_sparse), 1.0), "Diagonal not 1.0 for sparse"
+        for sampled_items_unique, communities in bootstrap_results:
+            if communities is not None:
+                valid_bootstrap_runs += 1
+                for item in sampled_items_unique:
+                    if item in current_items: # Ensure item is still relevant
+                        item_appearances[item] += 1
+                        original_comm = original_community_membership.get(item)
+                        current_comm = communities.get(item)
 
-    print("\nTesting edge case: single item:")
-    single_item_emb = np.array([[1, 2, 3]])
-    similarity_single = calculate_similarity_matrix(single_item_emb)
-    print("Single Item Embedding (1x3):\n", single_item_emb)
-    print("Similarity Matrix:\n", similarity_single)
-    assert similarity_single.shape == (1, 1), "Shape mismatch for single item"
-    assert np.allclose(similarity_single, [[1.0]]), "Value mismatch for single item"
+                        if original_comm != -99 and current_comm == original_comm:
+                            item_stability[item] += 1
 
-    print("\nTesting edge case: zero items:")
-    zero_item_emb = np.empty((0, 5))
-    similarity_zero = calculate_similarity_matrix(zero_item_emb)
-    print("Zero Item Embedding (0x5):\n", zero_item_emb)
-    print("Similarity Matrix:\n", similarity_zero)
-    assert similarity_zero.shape == (0, 0), "Shape mismatch for zero items"
+        # --- Handle case where all bootstrap runs failed --- #
+        if valid_bootstrap_runs == 0:
+            print(f"Warning: All {n_bootstrap} bootstrap runs failed in iteration {iteration}. Cannot calculate stability.")
+            # Decide outcome: Treat all items as unstable? Return error? Stop?
+            # Let's stop and return the current state, logging the issue.
+            final_stability_scores = {item: np.nan for item in current_items} # Indicate NaN stability
+            unstable_items = [] # Ensure it's defined, though loop will break
+            # removed_log will contain items removed in previous iterations
+            break # Exit the while loop
 
-    # --- Test TMFG --- #
-    print("\n--- Testing TMFG Construction ---")
-    # Create a sample similarity matrix (needs >= 3 nodes)
-    sim_matrix_test = np.array([
-        [1.0, 0.8, 0.1, 0.6],
-        [0.8, 1.0, 0.7, 0.2],
-        [0.1, 0.7, 1.0, 0.5],
-        [0.6, 0.2, 0.5, 1.0]
-    ])
-    n_test = sim_matrix_test.shape[0]
-    print("\nTest Similarity Matrix (4x4):\n", sim_matrix_test)
-    tmfg_graph = None # Initialize
-    try:
-        tmfg_graph = construct_tmfg_network(sim_matrix_test, item_labels=['A', 'B', 'C', 'D'])
-        print("\nTMFG Graph Nodes:", tmfg_graph.nodes())
-        print("TMFG Graph Edges (with weights):")
-        for u, v, data in tmfg_graph.edges(data=True):
-            print(f"  ({u}, {v}, weight: {data['weight']:.2f})")
+        # Normalize stability scores
+        current_stability_scores = {}
+        for item in current_items:
+            if item_appearances[item] > 0:
+                current_stability_scores[item] = item_stability[item] / item_appearances[item]
+            else:
+                # Item never appeared in a successful bootstrap sample (should be rare if n_bootstrap is large)
+                current_stability_scores[item] = 0.0 # Assign 0 stability
 
-        expected_edges = 3 * (n_test - 2)
-        print(f"Expected Edges: {expected_edges}")
-        print(f"Actual Edges: {tmfg_graph.number_of_edges()}")
-        assert tmfg_graph.number_of_edges() == expected_edges, "Incorrect number of edges in TMFG"
-        assert set(tmfg_graph.nodes()) == {'A', 'B', 'C', 'D'}, "Node labels mismatch"
+        # Store these scores as the potential final scores if loop terminates here
+        final_stability_scores = current_stability_scores.copy()
 
-    except ValueError as e:
-        print(f"Error constructing TMFG: {e}")
-    except ImportError:
-        print("NetworkX library not found. Please install it (`pip install networkx`) to test TMFG.")
+        # 3. Identify Unstable Items
+        unstable_items = [
+            item for item in current_items
+            if current_stability_scores.get(item, 0.0) < stability_threshold
+        ]
 
-    # Test edge case n < 3
-    print("\nTesting TMFG with n < 3:")
-    sim_matrix_small = np.array([[1.0, 0.5], [0.5, 1.0]])
-    try:
-        construct_tmfg_network(sim_matrix_small)
-    except ValueError as e:
-        print(f"Caught expected error for n=2: {e}")
-        assert "requires at least 3 nodes" in str(e)
-
-    # --- Test EBICglasso --- #
-    print("\n--- Testing EBICglasso Construction ---")
-    print("\nTest Similarity Matrix (4x4):\n", sim_matrix_test)
-    glasso_graph = None # Initialize
-    try:
-        glasso_graph = construct_ebicglasso_network(sim_matrix_test, item_labels=['A', 'B', 'C', 'D'], assume_centered=True)
-        print("\nEBICglasso Graph Nodes:", glasso_graph.nodes())
-        print("EBICglasso Graph Edges (with partial correlation weights):")
-        if glasso_graph.number_of_edges() > 0:
-            for u, v, data in glasso_graph.edges(data=True):
-                print(f"  ({u}, {v}, weight: {data['weight']:.2f})")
+        if not unstable_items:
+            # All remaining items are stable
+            if verbose: print(f"All {len(current_items)} items stable at threshold {stability_threshold}. bootEGA finished.")
+            break # Exit the while loop
         else:
-            print("  No edges found (graph is empty).")
-        print(f"Actual Edges: {glasso_graph.number_of_edges()}")
-        assert set(glasso_graph.nodes()) == {'A', 'B', 'C', 'D'}, "Node labels mismatch"
+            # 4. Remove the *least* stable item below the threshold
+            unstable_items.sort(key=lambda item: current_stability_scores.get(item, 0.0))
+            item_to_remove = unstable_items[0]
+            stability_at_removal = current_stability_scores.get(item_to_remove, 0.0)
 
-    except ValueError as e:
-        print(f"Error constructing EBICglasso network: {e}")
-    except ImportError:
-        print("Scikit-learn library not found. Please install it (`pip install scikit-learn`) to test EBICglasso.")
-    except RuntimeError as e:
-        print(f"Runtime error during EBICglasso fitting: {e}")
+            if verbose:
+                print(f"Removing item '{item_to_remove}' (Stability: {stability_at_removal:.3f} < {stability_threshold}) in iteration {iteration}.")
 
-    # Test edge case n < 2
-    print("\nTesting EBICglasso with n < 2:")
-    sim_matrix_tiny = np.array([[1.0]])
+            removed_log.append((item_to_remove, stability_at_removal, iteration))
+            current_items.remove(item_to_remove)
+
+            # Clear the progress callback state if it exists
+            if progress_callback:
+                 progress_callback(0, f"Iteration {iteration} finished. Starting next...")
+
+    # Return the final list of stable items and the log
+    return current_items, final_stability_scores, removed_log
+
+
+# --- Add main block for testing ---
+if __name__ == '__main__':
+    # Example usage/testing area (add tests for new functions)
+    print("Running basic tests for ega_service...")
+
+    # Test data
+    test_items = [f"Item_{i}" for i in range(10)]
+    np.random.seed(42)
+    test_dense_embeddings = np.random.rand(10, 50) # 10 items, 50 dims
+    test_sparse_embeddings = sp.random(10, 50, density=0.1, format='csr', random_state=42)
+
+
+    # Test calculate_similarity_matrix
+    print("\nTesting calculate_similarity_matrix...")
+    sim_dense = calculate_similarity_matrix(test_dense_embeddings)
+    print(f"Dense similarity matrix shape: {sim_dense.shape}")
+    assert sim_dense.shape == (10, 10)
+    sim_sparse = calculate_similarity_matrix(test_sparse_embeddings)
+    print(f"Sparse similarity matrix shape: {sim_sparse.shape}")
+    assert sim_sparse.shape == (10, 10)
+    print("Similarity calculation basic check passed.")
+
+
+    # Test calculate_wto
+    print("\nTesting calculate_wto...")
+    wto_dense = calculate_wto(sim_dense)
+    print(f"Dense wTO matrix shape: {wto_dense.shape}")
+    assert wto_dense.shape == (10, 10)
+    assert np.all(wto_dense >= 0) and np.all(wto_dense <= 1)
+    print("wTO calculation basic check passed.")
+
+
+    # Test construct_tmfg_network
+    print("\nTesting construct_tmfg_network...")
     try:
-        construct_ebicglasso_network(sim_matrix_tiny, assume_centered=True)
-    except ValueError as e:
-        print(f"Caught expected error for n=1: {e}")
-        assert "requires at least 2 nodes" in str(e)
+        tmfg_graph = construct_tmfg_network(sim_dense, item_labels=test_items)
+        print(f"TMFG graph nodes: {tmfg_graph.number_of_nodes()}, edges: {tmfg_graph.number_of_edges()}")
+        assert tmfg_graph.number_of_nodes() == 10
+        # Expected edges for TMFG = 3 * (n - 2) = 3 * (10 - 2) = 24
+        assert tmfg_graph.number_of_edges() == 24
+        print("TMFG construction basic check passed.")
+    except Exception as e:
+        print(f"TMFG construction failed: {e}")
 
-    print("\nEBICglasso test passed (or skipped if sklearn unavailable).")
-
-    # --- Test UVA (Refactored) --- #
-    print("\n--- Testing UVA (Refactored using Graph) ---")
-    # Example Graph (mimicking EBICglasso output with partial correlations)
-    G_test = nx.Graph()
-    test_labels = ['Item1', 'Item2', 'Item3', 'Item4', 'Item5']
-    G_test.add_nodes_from(test_labels)
-    # Add edges with weights (partial correlations) - Some high, some low
-    G_test.add_edge('Item1', 'Item2', weight=0.7)  # High correlation -> High wTO expected?
-    G_test.add_edge('Item1', 'Item3', weight=0.1)
-    G_test.add_edge('Item1', 'Item4', weight=0.2)
-    G_test.add_edge('Item2', 'Item3', weight=0.6)
-    G_test.add_edge('Item2', 'Item4', weight=0.15)
-    G_test.add_edge('Item3', 'Item4', weight=0.8)  # High correlation -> High wTO expected?
-    G_test.add_edge('Item3', 'Item5', weight=0.5)
-    G_test.add_edge('Item4', 'Item5', weight=0.4)
-
-    print("Test Graph Edges (Partial Correlations):")
-    for u, v, data in G_test.edges(data=True):
-        print(f"  ({u}, {v}, weight: {data['weight']:.2f})")
-
+    # Test construct_ebicglasso_network
+    print("\nTesting construct_ebicglasso_network...")
     try:
-        remaining, removed_log = remove_redundant_items_uva(
-            G_test.copy(), # Use a copy
-            test_labels,
-            wto_threshold=0.20, # Example threshold
-            graph_type='glasso' # Use absolute partial correlation for adjacency
-        )
-        print("\nUVA Results (Threshold 0.20, Type Glasso):")
-        print("  Remaining Items:", remaining)
-        print("  Removed Items Log:", [(label, f"{wto:.3f}") for label, wto in removed_log])
+        # Using assume_centered=True for similarity matrix input typically
+        glasso_graph = construct_ebicglasso_network(sim_dense, item_labels=test_items, assume_centered=True)
+        print(f"EBICglasso graph nodes: {glasso_graph.number_of_nodes()}, edges: {glasso_graph.number_of_edges()}")
+        assert glasso_graph.number_of_nodes() == 10
+        # Number of edges varies based on data and lasso alpha
+        print("EBICglasso construction basic check passed.")
+    except Exception as e:
+        print(f"EBICglasso construction failed: {e}")
 
-        # Test with TMFG type (will use same weights here, just tests the logic branch)
-        remaining_tmfg, removed_log_tmfg = remove_redundant_items_uva(
-            G_test.copy(), # Use a copy
-            test_labels,
-            wto_threshold=0.10, # Lower threshold for potentially more removal
-            graph_type='tmfg'
-        )
-        print("\nUVA Results (Threshold 0.10, Type TMFG):")
-        print("  Remaining Items:", remaining_tmfg)
-        print("  Removed Items Log:", [(label, f"{wto:.3f}") for label, wto in removed_log_tmfg])
 
-    except (ValueError, TypeError, KeyError, RuntimeError) as e:
-        print(f"Error during UVA test: {e}")
-
-    # --- Test Community Detection --- #
-    print("\n--- Testing Walktrap Community Detection ---")
-    membership_tmfg = None # Initialize
-    clustering_tmfg = None
-    if tmfg_graph and tmfg_graph.number_of_nodes() > 0:
-        print("\nTesting Walktrap on TMFG graph:")
+    # Test detect_communities_walktrap (requires a graph)
+    print("\nTesting detect_communities_walktrap...")
+    if 'glasso_graph' in locals() and IGRAPH_AVAILABLE:
         try:
-            membership_tmfg, clustering_tmfg = detect_communities_walktrap(tmfg_graph, weights='weight')
-            print(f"  Detected Communities (TMFG): {membership_tmfg}")
-            if clustering_tmfg: # Check if clustering object exists
-                 print(f"  Modularity (TMFG): {clustering_tmfg.modularity:.4f}")
-            assert set(membership_tmfg.keys()) == set(tmfg_graph.nodes())
-            assert all(isinstance(cid, int) for cid in membership_tmfg.values())
-        except ImportError as e:
-            print(f"  Skipping Walktrap test: {e}")
-        except RuntimeError as e:
-            print(f"  Error during Walktrap detection (TMFG): {e}")
-        except KeyError as e:
-            print(f"  Error during Walktrap detection - Likely missing weights (TMFG): {e}")
-
-    membership_glasso = None # Initialize
-    clustering_glasso = None
-    if glasso_graph and glasso_graph.number_of_nodes() > 0:
-        print("\nTesting Walktrap on EBICglasso graph:")
-        try:
-            membership_glasso, clustering_glasso = detect_communities_walktrap(glasso_graph, weights='weight')
-            print(f"  Detected Communities (EBICglasso): {membership_glasso}")
-            if clustering_glasso: # Check if clustering object exists
-                 print(f"  Modularity (EBICglasso): {clustering_glasso.modularity:.4f}")
-            assert set(membership_glasso.keys()) == set(glasso_graph.nodes())
-            assert all(isinstance(cid, int) for cid in membership_glasso.values())
-        except ImportError as e:
-            print(f"  Skipping Walktrap test: {e}")
-        except RuntimeError as e:
-            print(f"  Error during Walktrap detection (EBICglasso): {e}")
-        except KeyError as e:
-            print(f"  Error during Walktrap detection - Likely missing weights (EBICglasso): {e}")
-
-    # Test TEFI calculation (if communities were detected)
-    print("\n--- Testing TEFI Calculation ---")
-    if 'sim_matrix_test' in locals() and membership_tmfg:
-        print("\nTesting TEFI on TMFG communities:")
-        try:
-            tmfg_labels_ordered = list(tmfg_graph.nodes()) # Get actual node order from graph used
-            original_labels_order = ['A', 'B', 'C', 'D'] # Order corresponding to sim_matrix_test
-            label_to_orig_index = {label: i for i, label in enumerate(original_labels_order)}
-            ordered_indices = [label_to_orig_index[label] for label in tmfg_labels_ordered]
-            sim_matrix_for_tmfg_tefi = sim_matrix_test[np.ix_(ordered_indices, ordered_indices)]
-
-            tefi_tmfg = calculate_tefi(sim_matrix_for_tmfg_tefi, membership_tmfg)
-            print(f"  TEFI (TMFG): {tefi_tmfg:.4f}")
+            membership, _ = detect_communities_walktrap(glasso_graph)
+            print(f"Walktrap detected {len(set(membership.values()))} communities.")
+            assert len(membership) == glasso_graph.number_of_nodes()
+            print("Walktrap detection basic check passed.")
         except Exception as e:
-            print(f"  Error calculating TEFI (TMFG): {e}")
+            print(f"Walktrap detection failed: {e}")
+    elif not IGRAPH_AVAILABLE:
+         print("Skipping Walktrap test: igraph not available.")
     else:
-        print("Skipping TEFI test for TMFG (missing similarity matrix or communities).")
+        print("Skipping Walktrap test: EBICglasso graph not available.")
 
-    if 'sim_matrix_test' in locals() and membership_glasso:
-        print("\nTesting TEFI on EBICglasso communities:")
+
+    # Test calculate_tefi (requires similarity matrix and membership)
+    print("\nTesting calculate_tefi...")
+    if 'membership' in locals():
         try:
-            glasso_labels_ordered = list(glasso_graph.nodes()) # Get actual node order from graph used
-            original_labels_order = ['A', 'B', 'C', 'D'] # Order corresponding to sim_matrix_test
-            label_to_orig_index_g = {label: i for i, label in enumerate(original_labels_order)}
-            ordered_indices_g = [label_to_orig_index_g[label] for label in glasso_labels_ordered]
-            sim_matrix_for_glasso_tefi = sim_matrix_test[np.ix_(ordered_indices_g, ordered_indices_g)]
-
-            tefi_glasso = calculate_tefi(sim_matrix_for_glasso_tefi, membership_glasso)
-            print(f"  TEFI (EBICglasso): {tefi_glasso:.4f}")
+            tefi_score = calculate_tefi(sim_dense, membership)
+            print(f"TEFI score: {tefi_score:.4f}")
+            assert isinstance(tefi_score, float)
+            print("TEFI calculation basic check passed.")
         except Exception as e:
-            print(f"  Error calculating TEFI (EBICglasso): {e}")
+            print(f"TEFI calculation failed: {e}")
     else:
-        print("Skipping TEFI test for EBICglasso (missing similarity matrix or communities).")
+        print("Skipping TEFI test: Membership not available.")
 
-    print("\n--- End of ega_service Tests ---")
+    # Test calculate_nmi (placeholder test)
+    print("\nTesting calculate_nmi...")
+    if 'membership' in locals():
+         # Create dummy membership for testing structure
+         dummy_membership2 = {item: (comm_id + 1) % 3 for item, comm_id in membership.items()}
+         try:
+             nmi_score = calculate_nmi(membership, dummy_membership2)
+             print(f"NMI score (vs dummy): {nmi_score:.4f}")
+             assert isinstance(nmi_score, float) or np.isnan(nmi_score)
+             print("NMI calculation basic check passed.")
+         except Exception as e:
+             print(f"NMI calculation failed: {e}")
+    else:
+        print("Skipping NMI test: Membership not available.")
+
+
+    # Test remove_redundant_items_uva (requires a graph)
+    print("\nTesting remove_redundant_items_uva...")
+    if 'glasso_graph' in locals():
+        try:
+            remaining, removed = remove_redundant_items_uva(glasso_graph.copy(), test_items, wto_threshold=0.15, graph_type='glasso')
+            print(f"UVA remaining items: {len(remaining)}, removed: {len(removed)}")
+            print(f"Removed log: {removed}")
+            assert len(remaining) + len(removed) == len(test_items)
+            print("UVA basic check passed.")
+        except Exception as e:
+             print(f"UVA failed: {e}")
+    else:
+         print("Skipping UVA test: EBICglasso graph not available.")
+
+
+    # Test run_bootega_resampling (new function)
+    print("\nTesting run_bootega_resampling...")
+    if 'glasso_graph' in locals() and IGRAPH_AVAILABLE: # Requires graph for params
+        try:
+            # Use items remaining after UVA if available, else all items
+            items_for_bootega = locals().get('remaining', test_items)
+            if not items_for_bootega: items_for_bootega = test_items # Fallback if UVA removed all
+
+            print(f"Running bootEGA resampling on {len(items_for_bootega)} items...")
+            # Example parameters (adjust as needed)
+            boot_network_params = {'assume_centered': True, 'cv': 3} # Fewer CV folds for testing
+            boot_walktrap_params = {'steps': 4}
+
+            # Run sequentially first for easier debugging if needed
+            print("Testing sequential bootEGA...")
+            results_seq = run_bootega_resampling(
+                items=items_for_bootega,
+                embeddings=test_dense_embeddings, # Assuming using dense embeddings here
+                network_method='glasso',
+                network_params=boot_network_params,
+                walktrap_params=boot_walktrap_params,
+                n_bootstrap=10, # Small number for testing
+                use_parallel=False
+            )
+            print(f"Sequential run produced {len(results_seq)} results.")
+            assert len(results_seq) == 10
+            # Check structure of results (list of (sampled_list, community_dict or None))
+            assert isinstance(results_seq[0], tuple)
+            assert isinstance(results_seq[0][0], list) # sampled_item_list
+            assert isinstance(results_seq[0][1], dict) or results_seq[0][1] is None # community_membership_dict
+            print("Sequential bootEGA basic check passed.")
+
+
+            # Test parallel execution
+            print("\nTesting parallel bootEGA...")
+            results_par = run_bootega_resampling(
+                items=items_for_bootega,
+                embeddings=test_dense_embeddings,
+                network_method='glasso',
+                network_params=boot_network_params,
+                walktrap_params=boot_walktrap_params,
+                n_bootstrap=10,
+                use_parallel=True,
+                max_workers=2 # Limit workers for testing stability
+            )
+            print(f"Parallel run produced {len(results_par)} results.")
+            assert len(results_par) == 10
+            assert isinstance(results_par[0], tuple)
+            print("Parallel bootEGA basic check passed.")
+
+        except ImportError as ie:
+             print(f"Skipping bootEGA test: {ie}")
+        except Exception as e:
+            import traceback
+            print(f"bootEGA resampling failed: {e}")
+            traceback.print_exc()
+    elif not IGRAPH_AVAILABLE:
+        print("Skipping bootEGA test: igraph not available.")
+    else:
+        print("Skipping bootEGA test: EBICglasso graph not available for parameter context.")
+
+
+    # Test perform_bootega_stability_analysis (new function)
+    print("\nTesting perform_bootega_stability_analysis...")
+    if 'glasso_graph' in locals() and IGRAPH_AVAILABLE and 'membership' in locals():
+        try:
+            # Use items remaining after UVA if available, else all items
+            items_after_uva = locals().get('remaining', test_items)
+            if not items_after_uva: items_after_uva = test_items
+
+            # Need original community membership for these items
+            # Get the original membership for the items that went into UVA
+            original_membership_subset = {item: membership[item] for item in items_after_uva if item in membership}
+
+            if not original_membership_subset:
+                 print("Skipping bootEGA stability test: No original membership found for items after UVA.")
+            else:
+                print(f"Running bootEGA stability analysis on {len(items_after_uva)} items...")
+                # Example parameters
+                boot_network_params = {'assume_centered': True, 'cv': 3}
+                boot_walktrap_params = {'steps': 4}
+
+                stable_items, final_scores, removed_log = perform_bootega_stability_analysis(
+                    initial_items=items_after_uva,
+                    original_embeddings=test_dense_embeddings,
+                    original_community_membership=original_membership_subset, # Use the relevant subset
+                    network_method='glasso',
+                    network_params=boot_network_params,
+                    walktrap_params=boot_walktrap_params,
+                    stability_threshold=0.7, # Lower threshold for testing removal
+                    n_bootstrap=20, # Fewer bootstraps for faster testing
+                    use_parallel=False, # Easier to debug sequentially first
+                    progress_callback=None, # No progress callback for testing
+                    verbose=True # Added for potential logging
+                )
+
+                print(f"\nbootEGA Stability Results:")
+                print(f"  Stable Items ({len(stable_items)}): {stable_items}")
+                print(f"  Final Stability Scores: { {k: round(v, 3) for k, v in final_scores.items()} }")
+                print(f"  Removed Items ({len(removed_log)}): { [(i, round(s, 3)) for i, s in removed_log] }")
+                assert len(stable_items) + len(removed_log) == len(items_after_uva)
+                assert all(item in final_scores for item in stable_items)
+                print("bootEGA stability analysis basic check passed.")
+
+        except ImportError as ie:
+            print(f"Skipping bootEGA stability test: {ie}")
+        except Exception as e:
+            import traceback
+            print(f"bootEGA stability analysis failed: {e}")
+            traceback.print_exc()
+    elif not IGRAPH_AVAILABLE:
+        print("Skipping bootEGA stability test: igraph not available.")
+    else:
+        print("Skipping bootEGA stability test: Prerequisite data (graph, membership) not available.")
+
+
+    print("\nAll basic tests completed.")

@@ -59,7 +59,7 @@
     *   Updated "Clear History" to also clear embeddings.
 *   Refactored prompting logic:
     *   Created `src/prompting.py`.
-    *   Moved `DEFAULT_POSITIVE_EXAMPLES`, `DEFAULT_NEGATIVE_EXAMPLES`, and prompt/parsing/filtering functions from `app.py` to `src/prompting.py`.
+    *   Moved `DEFAULT_POSITIVE_EXAMPLES`, `DEFAULT_NEGATIVE_EXAMPLES`, and prompt/parsing/filtering functions (`create_system_prompt`, `create_user_prompt`, `parse_generated_items`, `filter_unique_items`) from `app.py` to `src/prompting.py`. (Note: `specific_prompts` remains local to `app.py`).
     *   Updated `app.py` imports to use `src.prompting`.
 *   Revised embedding strategy based on API limitations:
     *   Discovered OpenAI API (`v1.x`) does not directly return sparse embeddings as initially assumed (or capability was removed/changed).
@@ -225,3 +225,26 @@
     *   Restored the `generate_items` function definition within `app.py` (it was incorrectly removed in a previous cleanup).
 *   Fixed `StreamlitDuplicateElementId` error in `app.py` by adding `key="focus_area_selectbox"` to the focus area `st.selectbox` in Section 1.
 *   Updated `PROJECTPLAN.md` to mark Phase 4 UVA refactoring tasks as complete.
+
+## [Date TBD] - Phase 5: bootEGA Core Logic & Integration
+
+*   Implemented core bootEGA functions in `src/ega_service.py`:
+    *   `_run_bootstrap_single`: Helper for parallel execution, performs one bootstrap sample EGA run.
+    *   `run_bootega_resampling`: Manages parallel/sequential execution of `_run_bootstrap_single` for N bootstraps, includes progress reporting.
+    *   `perform_bootega_stability_analysis`: Orchestrates the iterative stability analysis, calling resampling, calculating stability, removing unstable items, and returning final results.
+*   Integrated bootEGA into `app.py` (Section 8):
+    *   Added UI inputs for N bootstraps, stability threshold, and parallel processing toggle.
+    *   Added "Run bootEGA" button logic to call `perform_bootega_stability_analysis`.
+    *   Included input validation and preparation steps (fetching required data like post-UVA items, embeddings, original communities, initial NMI).
+    *   Implemented progress bar using `st.progress` and a callback function (`update_progress`).
+    *   Added logic to run final EGA on stable items and calculate final NMI.
+    *   Stored results (stable items, stability scores, removed log, NMI values) in session state.
+*   Applied several fixes based on testing and feedback:
+    *   Corrected `detect_communities_walktrap` calls to remove invalid `item_labels` argument.
+    *   Standardized bootEGA session state keys (`bootega_removed_log`, `bootega_final_stability_scores`).
+    *   Fixed `TypeError` related to `callable` type hint by importing and using `collections.abc.Callable`.
+    *   Cleaned up `igraph` import logic and removed unused imports in `ega_service.py`.
+    *   Corrected placement of `st.rerun()` in `app.py` bootEGA handler to ensure analysis runs before rerun.
+    *   Fixed undefined `update_progress` callback and `initial_nmi` variable in `app.py`.
+    *   Corrected session state key construction for fetching original community membership in `app.py`.
+*   **Note:** UI elements for displaying the detailed bootEGA *results* (stability scores, removed items list, NMI comparison) are implemented in the backend logic storage but not yet added to the Streamlit interface as per `PROJECTPLAN.md`.
