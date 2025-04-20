@@ -96,13 +96,13 @@ graph TD
 - [x] Plot: Implement interactive network visualization (e.g., `pyvis` or `plotly`) showing items colored by detected community
 
 ### Phase 4 — Unique Variable Analysis
-- [ ] Compute wTO based on network structure from Phase 3 (potentially requires GGM estimation; consider sparse vs. dense input)
-- [ ] Iteratively remove item with highest wTO ≥ threshold (default 0.20, adjustable via slider)
-- [ ] Display dropped items table; allow user override (restore checkbox)
-- [ ] **Refactor UVA implementation:** Modify `remove_redundant_items_uva` to accept the constructed network graph (TMFG or EBICglasso) from Phase 3.
-- [ ] Inside the UVA loop, calculate wTO based on an adjacency matrix derived from the *current subgraph's structure* (e.g., absolute partial correlations for EBICglasso, existing edge weights for TMFG), **not** the raw similarity matrix subset.
-- [ ] Iteratively remove item with highest wTO ≥ threshold (default 0.20, adjustable via slider), using sum of *graph-based* connection strengths for tie-breaking.
-- [ ] Display dropped items table; allow user override (restore checkbox) [UI feature].
+- [x] Compute wTO based on network structure from Phase 3 (Refactored: Implemented in `remove_redundant_items_uva` using graph adjacency)
+- [x] Iteratively remove item with highest wTO ≥ threshold (default 0.20, adjustable via slider)
+- [x] Display dropped items table; ~~allow user override (restore checkbox)~~ (Override not implemented yet)
+- [x] **Refactor UVA implementation:** Modify `remove_redundant_items_uva` to accept the constructed network graph (TMFG or EBICglasso) from Phase 3.
+- [x] Inside the UVA loop, calculate wTO based on an adjacency matrix derived from the *current subgraph's structure* (e.g., absolute partial correlations for EBICglasso, existing edge weights for TMFG), **not** the raw similarity matrix subset.
+- [x] Iteratively remove item with highest wTO ≥ threshold (default 0.20, adjustable via slider), using sum of *graph-based* connection strengths for tie-breaking.
+- [x] Display dropped items table; ~~allow user override (restore checkbox) [UI feature]~~ (Override not implemented yet)
 
 ### Phase 5 — bootEGA Stability
 - [ ] Bootstrap resampling engine (multiprocessing fallback)

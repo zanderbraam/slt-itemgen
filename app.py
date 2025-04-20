@@ -313,6 +313,7 @@ def main():
     selected_option = st.selectbox(
         "Select a focus area for the items:",
         options,
+        key="focus_area_selectbox"
     )
 
     n_items = st.slider(
@@ -829,169 +830,194 @@ def main():
             st.metric(f"{network_method} Network ({input_matrix_type})", "Not Constructed", "-")
 
 
-    # --- Section 7: Unique Variable Analysis (UVA) - Remove Redundancy --- #
+    # ==============================================
+    # Section 7: Unique Variable Analysis (UVA)
+    # ==============================================
     st.header("7. Unique Variable Analysis (UVA)")
 
-    # Determine if prerequisite similarity matrix for UVA is available
-    # UVA needs the *initial* similarity matrix corresponding to the *confirmed* items
-    # We'll use the similarity matrix chosen implicitly by the EGA input selection for now.
-    # A more robust approach might explicitly store the similarity matrix used for UVA.
-    prereq_for_uva = (
-        st.session_state.items_confirmed and
-        (st.session_state.similarity_matrix_dense is not None or st.session_state.similarity_matrix_sparse is not None)
-    )
+    # This section is only active if a network has been constructed (Section 6)
+    if (
+        st.session_state.tmfg_graph_dense is not None or
+        st.session_state.tmfg_graph_sparse is not None or
+        st.session_state.glasso_graph_dense is not None or
+        st.session_state.glasso_graph_sparse is not None
+    ):
+        st.write("Apply Unique Variable Analysis (UVA) to remove redundant items based on Weighted Topological Overlap (wTO) calculated from the selected network structure.")
 
-    if prereq_for_uva:
-        st.subheader("7.1 Configure & Run UVA")
+        uva_threshold = st.slider(
+            "wTO Redundancy Threshold",
+            min_value=0.0, max_value=1.0, value=0.20, step=0.01,
+            help="Items in pairs with wTO >= this threshold (calculated on the selected network) are considered redundant. The item with lower total connection strength in the pair is removed iteratively."
+        )
 
-        # Select which similarity matrix to use for UVA (based on EGA selection or allow choice)
-        # For simplicity, let's base it on the EGA input type selected in Section 6
-        uva_input_matrix = None
-        uva_input_type_label = ""
-        if st.session_state.ega_input == "Dense Embeddings" and st.session_state.similarity_matrix_dense is not None:
-            uva_input_matrix = st.session_state.similarity_matrix_dense
-            uva_input_type_label = "Dense Similarity Matrix"
-        elif st.session_state.ega_input == "Sparse Embeddings (TF-IDF)" and st.session_state.similarity_matrix_sparse is not None:
-            uva_input_matrix = st.session_state.similarity_matrix_sparse
-            uva_input_type_label = "Sparse Similarity Matrix"
-        else:
-            # Fallback if EGA input doesn't match available matrix (shouldn't happen if logic is sound)
-            if st.session_state.similarity_matrix_dense is not None:
-                 uva_input_matrix = st.session_state.similarity_matrix_dense
-                 uva_input_type_label = "Dense Similarity Matrix (Fallback)"
-            elif st.session_state.similarity_matrix_sparse is not None:
-                 uva_input_matrix = st.session_state.similarity_matrix_sparse
-                 uva_input_type_label = "Sparse Similarity Matrix (Fallback)"
+        # Determine which graph was last selected/constructed in Section 6
+        # Read the state directly from the radio button keys used in Section 6
+        selected_network_method_uva = st.session_state.get('network_method_select', 'TMFG') # Use correct key
+        selected_embedding_type_uva = st.session_state.get('input_matrix_select', 'Dense Embeddings') # Use correct key
 
-        if uva_input_matrix is not None:
-            st.write(f"Using: **{uva_input_type_label}** (based on Section 6 input selection)")
+        graph_to_use = None
+        graph_type_str = ""
+        sim_matrix_source_desc = ""
 
-            # Slider for wTO threshold
-            wto_threshold = st.slider(
-                "wTO Redundancy Threshold:",
-                min_value=0.0,
-                max_value=1.0,
-                value=st.session_state.get("uva_threshold_used", 0.20), # Use last used or default
-                step=0.01,
-                help="Items in pairs with wTO >= this value will be considered for removal. Lower values remove more items. (AI-GENIE paper suggests 0.20)",
-                key="uva_threshold_slider"
-            )
+        if selected_network_method_uva == "TMFG":
+            graph_type_str = "tmfg"
+            if selected_embedding_type_uva == "Dense Embeddings" and st.session_state.tmfg_graph_dense:
+                graph_to_use = st.session_state.tmfg_graph_dense
+                sim_matrix_source_desc = "TMFG network (from Dense embeddings)"
+            elif selected_embedding_type_uva == "Sparse Embeddings (TF-IDF)" and st.session_state.tmfg_graph_sparse:
+                graph_to_use = st.session_state.tmfg_graph_sparse
+                sim_matrix_source_desc = "TMFG network (from Sparse embeddings)"
+        elif selected_network_method_uva == "EBICglasso":
+            graph_type_str = "glasso"
+            if selected_embedding_type_uva == "Dense Embeddings" and st.session_state.glasso_graph_dense: # Check against correct string
+                graph_to_use = st.session_state.glasso_graph_dense
+                sim_matrix_source_desc = "EBICglasso network (from Dense embeddings)"
+            elif selected_embedding_type_uva == "Sparse Embeddings (TF-IDF)" and st.session_state.glasso_graph_sparse: # Check against correct string
+                graph_to_use = st.session_state.glasso_graph_sparse
+                sim_matrix_source_desc = "EBICglasso network (from Sparse embeddings)"
 
-            # Button to run UVA
-            if st.button("Run UVA to Remove Redundant Items", key="run_uva"):
-                confirmed_items = st.session_state.previous_items
-                if uva_input_matrix is not None and confirmed_items:
-                    try:
-                        st.session_state.uva_error = None # Clear previous errors
-                        with st.spinner("Running Unique Variable Analysis... This may take a moment."):
-                            remaining, removed_log = remove_redundant_items_uva(
-                                initial_similarity_matrix=uva_input_matrix,
-                                item_labels=confirmed_items,
-                                wto_threshold=wto_threshold,
-                            )
-                        st.session_state.uva_remaining_items = remaining
-                        st.session_state.uva_removed_items_log = removed_log
-                        st.session_state.uva_threshold_used = wto_threshold # Store threshold used
-                        st.session_state.uva_run_complete = True
-                        st.success("UVA process completed.")
-                        st.rerun() # Rerun to update display immediately
+        if graph_to_use:
+            st.info(f"UVA will run using the: **{sim_matrix_source_desc}**")
 
-                    except (ValueError, TypeError) as e:
-                        st.session_state.uva_error = f"UVA Input Error: {e}"
-                        st.session_state.uva_run_complete = False
-                        st.error(st.session_state.uva_error)
-                    except Exception as e:
-                        st.session_state.uva_error = f"An unexpected error occurred during UVA: {traceback.format_exc()}"
-                        st.session_state.uva_run_complete = False
-                        st.error(st.session_state.uva_error)
+            if st.button("Run Unique Variable Analysis (UVA)", key="run_uva"):
+                if not st.session_state.previous_items:
+                    st.error("Cannot run UVA: No confirmed items found.")
+                elif not graph_to_use:
+                     st.error(f"Cannot run UVA: The required graph ({sim_matrix_source_desc}) is not available. Please construct it in Section 6.")
                 else:
-                    st.warning("Cannot run UVA. Ensure items are confirmed and a similarity matrix is available.")
+                    try:
+                        # Get the item labels corresponding to the nodes in the graph
+                        # These should be the same as st.session_state.previous_items
+                        # but using graph.nodes() ensures consistency.
+                        current_item_labels = list(graph_to_use.nodes())
 
-            # Display UVA error if it occurred
-            if st.session_state.get("uva_error"):
-                st.error(f"UVA Error: {st.session_state.uva_error}")
+                        with st.spinner(f"Running UVA with threshold {uva_threshold:.2f} on {sim_matrix_source_desc}..."):
+                            remaining_items, removed_log = remove_redundant_items_uva(
+                                graph=graph_to_use, # Pass the selected graph
+                                item_labels=current_item_labels,
+                                wto_threshold=uva_threshold,
+                                graph_type=graph_type_str # Specify 'tmfg' or 'glasso'
+                            )
+                        st.session_state.uva_remaining_items = remaining_items
+                        st.session_state.uva_removed_log = removed_log
+                        st.session_state.uva_threshold = uva_threshold
+                        st.session_state.uva_input_source = sim_matrix_source_desc # Store which graph was used
+                        st.success(f"UVA completed using {sim_matrix_source_desc}.")
+                        st.rerun() # Rerun to update display
+                    except (ValueError, TypeError, KeyError, RuntimeError) as e:
+                        st.error(f"Error during UVA calculation: {e}")
+                        st.exception(e)
+                        st.session_state.uva_remaining_items = None
+                        st.session_state.uva_removed_log = None
+                    except Exception as e:
+                        st.error(f"An unexpected error occurred during UVA: {e}")
+                        st.exception(e)
+                        st.session_state.uva_remaining_items = None
+                        st.session_state.uva_removed_log = None
+
+            # --- Display UVA Results --- #
+            if st.session_state.get("uva_remaining_items") is not None:
+                st.subheader("UVA Results")
+                col1, col2, col3 = st.columns(3)
+                removed_count = len(st.session_state.uva_removed_log)
+                remaining_count = len(st.session_state.uva_remaining_items)
+                initial_count = removed_count + remaining_count
+                col1.metric("Initial Items", initial_count)
+                col2.metric("Items Removed", removed_count)
+                col3.metric("Items Remaining", remaining_count)
+                st.caption(f"Based on threshold wTO >= {st.session_state.uva_threshold:.2f} using {st.session_state.uva_input_source}")
+
+                if st.session_state.uva_removed_log:
+                    st.write("**Items Removed by UVA:**")
+                    # Format log for display
+                    removed_data = [{
+                        "Removed Item": item,
+                        f"Max wTO Trigger ({st.session_state.uva_threshold:.2f})": f"{wto:.4f}"
+                        } for item, wto in st.session_state.uva_removed_log
+                    ]
+                    st.dataframe(pd.DataFrame(removed_data), use_container_width=True)
+
+                st.write("**Final Item Pool after UVA:**")
+                final_items_text = "\n".join([f"{i+1}. {item}" for i, item in enumerate(st.session_state.uva_remaining_items)])
+                st.text_area("Final Items", value=final_items_text, height=200, key="uva_final_items_display", disabled=True)
+            elif st.session_state.get("uva_error"): # Check if there was an error previously
+                 st.warning("UVA could not be completed due to an error.")
 
         else:
-             st.warning("Selected input similarity matrix type not available. Please calculate it in Section 5.")
-
-        # --- Display UVA Results --- #
-        st.subheader("7.2 UVA Results")
-        if st.session_state.get("uva_run_complete"):
-            removed_log = st.session_state.uva_removed_items_log
-            remaining_items = st.session_state.uva_remaining_items
-            threshold = st.session_state.uva_threshold_used
-            initial_count = len(st.session_state.previous_items)
-            removed_count = len(removed_log)
-            remaining_count = len(remaining_items)
-
-            st.metric(label=f"Items Removed (wTO >= {threshold:.2f})", value=removed_count, delta=f"{removed_count - initial_count} items removed")
-            st.metric(label="Items Remaining", value=remaining_count)
-
-            if removed_log:
-                st.write("Items removed due to redundancy:")
-                # Convert log to DataFrame for better display
-                removed_df = pd.DataFrame(removed_log, columns=['Removed Item', 'Triggering wTO'])
-                removed_df['Triggering wTO'] = removed_df['Triggering wTO'].round(4)
-                st.dataframe(removed_df, use_container_width=True)
-            else:
-                st.info("No items were removed based on the current threshold.")
-
-            st.write("Final items after UVA:")
-            st.text_area(
-                "Remaining Items",
-                value="\n".join(remaining_items) if remaining_items else "",
-                height=200,
-                disabled=True,
-                key="uva_remaining_items_display"
-            )
-        else:
-            st.info("Run UVA in section 7.1 to see results.")
+            st.warning("Please construct a network (TMFG or EBICglasso) in Section 6 before running UVA.")
 
     else:
-        st.info("Calculate at least one similarity matrix (Section 5) to proceed to UVA.")
+        st.info("Construct a network in Section 6 to enable Unique Variable Analysis.")
 
-    # --- Section 8: bootEGA (Placeholder) --- #
-    st.header("8. bootEGA Stability Analysis (Phase 5)")
-    if st.session_state.get("uva_run_complete"):
-         st.info("TODO: Implement bootEGA based on the remaining items from UVA.")
-         # Future logic will depend on st.session_state.uva_remaining_items
+    # ==============================================
+    # Section 8: bootEGA Stability Analysis
+    # ==============================================
+    st.header("8. bootEGA Stability Analysis")
+
+    # Placeholder - Requires Phase 5 implementation
+    if st.session_state.get("uva_remaining_items") is not None:
+        st.info("bootEGA implementation (Phase 5) is pending.")
+        st.write(f"Stability analysis would run on the {len(st.session_state.uva_remaining_items)} items remaining after UVA.")
+        # Add button placeholder if needed
+        # if st.button("Run bootEGA (Placeholder)"):
+        #    st.warning("bootEGA is not yet implemented.")
     else:
-         st.info("Complete Unique Variable Analysis (Section 7) to proceed to bootEGA.")
+        st.info("Complete Unique Variable Analysis (UVA) in Section 7 to enable bootEGA.")
 
-    # --- Section 9: Export (Placeholder) --- #
-    st.header("9. Export Results (Phase 6)")
-    if st.session_state.get("uva_run_complete"): # Should depend on bootEGA completion eventually
-         st.info("TODO: Implement PDF report and CSV export.")
+
+    # ==============================================
+    # Section 9: Export Results
+    # ==============================================
+    st.header("9. Export Results")
+
+    # Placeholder - Requires Phase 6 implementation
+    if st.session_state.get("uva_remaining_items") is not None: # Check if UVA produced results (bootEGA might modify this later)
+        st.info("Export functionality (Phase 6) is pending.")
+        # Add button placeholders if needed
+        # st.download_button(
+        #     label="Download Final Items (.csv) (Placeholder)",
+        #     data="", # Replace with CSV data
+        #     file_name="final_items.csv",
+        #     mime="text/csv",
+        # )
+        # st.download_button(
+        #     label="Download Report (.pdf) (Placeholder)",
+        #     data="", # Replace with PDF data
+        #     file_name="ai_genie_report.pdf",
+        #     mime="application/pdf",
+        # )
     else:
-         st.info("Complete the analysis pipeline (including UVA and bootEGA) to enable export.")
+        st.info("Complete the analysis pipeline (at least through UVA) to enable export.")
 
+
+# ==============================================
+# Helper Functions (moved below main for clarity)
+# ==============================================
 
 def parse_items_from_text(text_content: str) -> list[str]:
-    """Parses items from a multi-line text block.
-
-    - Splits by newline.
-    - Strips leading/trailing whitespace from each line.
-    - Removes common list markers (e.g., "1. ", "- ", "* ").
-    - Filters out empty lines.
+    """Parses items from a potentially numbered or bulleted list in a text block.
 
     Args:
         text_content: The string content from the text area.
 
     Returns:
-        A list of parsed item strings.
+        A list of cleaned item strings.
     """
     items = []
-    if not text_content:
-        return items
-
     lines = text_content.strip().split('\n')
     for line in lines:
         cleaned_line = line.strip()
-        # Remove potential list markers using regex
-        cleaned_line = re.sub(r'^\\s*\\d+\\.\\s*', '', cleaned_line) # "1. "
-        cleaned_line = re.sub(r'^\\s*[-*]\\s*', '', cleaned_line)    # "- " or "* "
-        if cleaned_line:
-            items.append(cleaned_line)
+        if not cleaned_line:
+            continue
+        # Remove common list markers (digits, dots, hyphens, asterisks followed by space)
+        match = re.match(r"^\s*\d+[\.\)]\s*|^\s*[-*+]\s+", cleaned_line)
+        if match:
+            item_text = cleaned_line[match.end():].strip()
+        else:
+            item_text = cleaned_line
+
+        if item_text: # Ensure we don't add empty strings
+            items.append(item_text)
     return items
 
 
@@ -1098,5 +1124,8 @@ def generate_items(
         return []
 
 
+# ==============================================
+# Main Execution Guard
+# ==============================================
 if __name__ == "__main__":
     main()

@@ -209,3 +209,19 @@
     *   Made subsequent sections (8: bootEGA, 9: Export) conditional on UVA completion.
     *   Updated "Clear Item History & Start Over" button to reset UVA state.
 *   Fixed `AttributeError` in `app.py` by re-adding missing initialization for `show_network_labels` in session state.
+
+## [Date TBD] - Phase 4: UVA Refinement & Bug Fixes
+
+*   Refactored `remove_redundant_items_uva` in `src/ega_service.py`:
+    *   Changed function signature to accept `graph: nx.Graph` and `graph_type: str` instead of `initial_similarity_matrix: np.ndarray`.
+    *   Modified internal logic to calculate wTO based on the adjacency matrix derived from the *current subgraph* within the iterative loop, using absolute edge weights.
+    *   Updated tie-breaking logic to use the sum of absolute connection strengths from the current subgraph.
+    *   Added new test cases for the refactored function in the `__main__` block.
+*   Updated Section 7 (UVA) in `app.py`:
+    *   Modified the call to `remove_redundant_items_uva` to pass the selected `networkx.Graph` (TMFG or EBICglasso from Section 6 state) and the corresponding `graph_type` string ('tmfg' or 'glasso').
+    *   Corrected logic to read the selected network method and input type from the correct session state keys (`network_method_select`, `input_matrix_select`) set by Section 6's radio buttons, ensuring the UVA input description is accurate.
+*   Fixed `ImportError: cannot import name 'generate_items'` in `app.py`:
+    *   Removed `generate_items` from the `src.prompting` import list.
+    *   Restored the `generate_items` function definition within `app.py` (it was incorrectly removed in a previous cleanup).
+*   Fixed `StreamlitDuplicateElementId` error in `app.py` by adding `key="focus_area_selectbox"` to the focus area `st.selectbox` in Section 1.
+*   Updated `PROJECTPLAN.md` to mark Phase 4 UVA refactoring tasks as complete.
