@@ -374,6 +374,17 @@ def main():
         ),
     )
 
+    top_p = st.slider(
+        "Top P (nucleus sampling):",
+        min_value=0.0,
+        max_value=1.0,
+        value=1.0,
+        step=0.05,
+        help=(
+            "Controls diversity via nucleus sampling. Lower values (0.1) = focus on most likely tokens, higher values (1.0) = consider all tokens."
+        ),
+    )
+
     # --- Section 2: (Optional) Customize Prompting ---
     st.header("2. (Optional) Customize Prompting")
     with st.expander("Advanced Prompting Options"):
@@ -410,6 +421,7 @@ def main():
                         prompt_focus=selected_option,
                         n=n_items,
                         temperature=temperature,
+                        top_p=top_p,
                         previous_items=current_items_in_text, # Pass current text items
                         positive_examples=user_positive_examples or None,
                         negative_examples=user_negative_examples or None,
@@ -1274,6 +1286,7 @@ def generate_items(
     prompt_focus: str,
     n: int,
     temperature: float,
+    top_p: float,
     previous_items: list[str],
     positive_examples: str | None = None,
     negative_examples: str | None = None,
@@ -1289,6 +1302,7 @@ def generate_items(
         prompt_focus: The specific construct to generate items for (from specific_prompts keys).
         n: The target number of unique items to generate in this batch.
         temperature: The creativity/randomness setting for the LLM (0.0 to 1.5).
+        top_p: The nucleus sampling parameter for the LLM (0.0 to 1.0).
         previous_items: A list of already generated items in this session to avoid duplicates.
         positive_examples: Optional user-provided string of positive examples (one per line).
                          If None, defaults are used for communicative participation focus.
@@ -1355,6 +1369,7 @@ def generate_items(
             max_tokens=max(200, 20 * n), # Adjusted token estimation
             n=1,
             temperature=temperature,
+            top_p=top_p,
             stop=None
         )
 

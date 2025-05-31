@@ -259,3 +259,17 @@
     *   Display the final list of stable items using a disabled `st.text_area`.
 *   Added conditional logic to show results only when `bootega_status` is "Completed", display an error message if "Error", and show an informational message otherwise.
 *   Updated `PROJECTPLAN.md` to mark Phase 5 UI display tasks as complete.
+
+## [Date TBD] - Top P Parameter Addition
+
+*   Enhanced item generation controls in `app.py` (Section 1):
+    *   Added "Top P (nucleus sampling)" slider with range 0.0-1.0, default value 1.0, step 0.05.
+    *   Added descriptive help text explaining nucleus sampling functionality.
+    *   Positioned slider immediately after the temperature slider for logical parameter grouping.
+*   Updated `generate_items` function signature in `app.py`:
+    *   Added `top_p: float` parameter after temperature in function signature.
+    *   Updated docstring to document the new top_p parameter and its range.
+    *   Modified OpenAI API call (`client.chat.completions.create`) to include `top_p=top_p` parameter.
+*   Updated item generation button logic in `app.py` (Section 3):
+    *   Modified call to `generate_items()` to pass the `top_p` slider value.
+*   This enhancement provides users with additional control over the diversity and focus of generated items through nucleus sampling, complementing the existing temperature parameter for comprehensive generation tuning.
