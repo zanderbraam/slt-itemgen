@@ -273,3 +273,24 @@
 *   Updated item generation button logic in `app.py` (Section 3):
     *   Modified call to `generate_items()` to pass the `top_p` slider value.
 *   This enhancement provides users with additional control over the diversity and focus of generated items through nucleus sampling, complementing the existing temperature parameter for comprehensive generation tuning.
+
+## [Date TBD] - Quality of Life Improvements: NMI Calculation & Item Text Display
+
+*   **Fixed NMI calculation in EGA Section (Section 6)**:
+    *   Replaced placeholder `np.nan` assignment with proper NMI calculation comparing detected communities against a baseline.
+    *   Implemented baseline comparison where each item is assigned to its own community (maximum separation baseline).
+    *   Added proper error handling with fallback to `np.nan` if NMI calculation fails.
+    *   Users now see actual NMI values instead of persistent "N/A" in the Fit Metrics display.
+
+*   **Enhanced item text display throughout UVA and bootEGA sections**:
+    *   Added `get_item_text_from_label()` helper function to map "Item X" labels back to actual item text using regex parsing and index lookup.
+    *   Added `format_items_with_text()` helper function to format item lists with actual text for user-friendly display.
+    *   **UVA Results (Section 7)**:
+        *   "Items Removed by UVA" table now shows actual item text instead of "Item X" labels.
+        *   "Final Item Pool after UVA" text area displays actual item sentences instead of "1. Item 48" format.
+    *   **bootEGA Results (Section 8)**:
+        *   "Items Removed During bootEGA Iterations" table shows actual item text with proper formatting.
+        *   "Final Stability Scores for Stable Items" table displays actual item text instead of labels.
+        *   "Final Stable Item Pool" text area shows numbered list with actual item sentences.
+
+*   **Benefits**: These improvements significantly enhance user experience by showing meaningful item content instead of opaque labels, making results more interpretable and actionable for researchers and practitioners.

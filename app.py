@@ -773,10 +773,19 @@ def main():
                             st.session_state[tefi_key] = None
                             st.warning("Walktrap completed, but no valid communities found or modularity could not be calculated. TEFI cannot be calculated.")
 
-                        # NMI calculation - Placeholder logic for initial run
-                        # In phase 6, we compare against a reference. Here, we might compare against itself (NMI=1) or store NaN.
-                        # Let's store NaN for now, as the meaningful NMI comes after bootEGA comparison.
-                        st.session_state[nmi_key] = np.nan
+                        # NMI calculation - Calculate initial NMI comparing detected vs random baseline
+                        # For initial NMI, we'll compare against a baseline where each item is in its own community
+                        if membership_dict:
+                            try:
+                                # Create baseline: each item in its own community (maximum modularity baseline)
+                                baseline_membership = {item: i for i, item in enumerate(membership_dict.keys())}
+                                initial_nmi = calculate_nmi(baseline_membership, membership_dict)
+                                st.session_state[nmi_key] = initial_nmi
+                            except Exception as e_nmi:
+                                # If NMI calculation fails, fall back to NaN
+                                st.session_state[nmi_key] = np.nan
+                        else:
+                            st.session_state[nmi_key] = np.nan
 
                         st.rerun() # Rerun to update metrics and plot color
                     except ImportError:
@@ -955,15 +964,17 @@ def main():
 
             if st.session_state.uva_removed_log:
                 st.write("**Items Removed by UVA:**")
-                removed_data = [{
-                    "Removed Item": item,
-                    f"Max wTO Trigger ({st.session_state.get('uva_threshold', 'N/A'):.2f})": f"{wto:.4f}"
-                    } for item, wto in st.session_state.uva_removed_log
-                ]
+                removed_data = []
+                for item_label, wto in st.session_state.uva_removed_log:
+                    actual_text = get_item_text_from_label(item_label, st.session_state.previous_items)
+                    removed_data.append({
+                        "Removed Item": actual_text,
+                        f"Max wTO Trigger ({st.session_state.get('uva_threshold', 'N/A'):.2f})": f"{wto:.4f}"
+                    })
                 st.dataframe(pd.DataFrame(removed_data), use_container_width=True)
 
             st.write("**Final Item Pool after UVA:**")
-            final_items_text = "\n".join([f"{i+1}. {item}" for i, item in enumerate(st.session_state.uva_final_items)])
+            final_items_text = format_items_with_text(st.session_state.uva_final_items, st.session_state.previous_items)
             st.text_area("Final Items", value=final_items_text, height=200, key="uva_final_items_display", disabled=True)
         elif st.session_state.uva_status == "Error":
             st.error("UVA could not be completed due to an error. Check logs or adjust parameters.")
@@ -1199,7 +1210,15 @@ def main():
         # Display Removed Items Log
         if removed_log:
             st.write("**Items Removed During bootEGA Iterations:**")
-            removed_df = pd.DataFrame(removed_log, columns=["Removed Item", "Stability Score", "Iteration"])
+            removed_data = []
+            for item_label, stability_score, iteration in removed_log:
+                actual_text = get_item_text_from_label(item_label, st.session_state.previous_items)
+                removed_data.append({
+                    "Removed Item": actual_text,
+                    "Stability Score": f"{stability_score:.4f}",
+                    "Iteration": iteration
+                })
+            removed_df = pd.DataFrame(removed_data)
             st.dataframe(removed_df, use_container_width=True)
         else:
             st.write("No items were removed during bootEGA.")
@@ -1208,21 +1227,20 @@ def main():
         if stability_scores and stable_items:
             st.write("**Final Stability Scores for Stable Items:**")
             scores_data = []
-            for item in stable_items: # Iterate through stable items to maintain order
-                score = stability_scores.get(item, np.nan)
-                scores_data.append({"Stable Item": item, "Final Stability Score": f"{score:.4f}"})
+            for item_label in stable_items: # Iterate through stable items to maintain order
+                actual_text = get_item_text_from_label(item_label, st.session_state.previous_items)
+                score = stability_scores.get(item_label, np.nan)
+                scores_data.append({
+                    "Stable Item": actual_text,
+                    "Final Stability Score": f"{score:.4f}"
+                })
 
             scores_df = pd.DataFrame(scores_data)
-            # Optional: Display histogram
-            # fig_hist, ax_hist = plt.subplots()
-            # scores_df['Final Stability Score'].astype(float).hist(ax=ax_hist, bins=10)
-            # ax_hist.set_title('Distribution of Final Stability Scores')
-            # st.pyplot(fig_hist)
             st.dataframe(scores_df, use_container_width=True)
 
             st.write("**Final Stable Item Pool:**")
-            final_items_text = "\n".join([f"{i+1}. {item}" for i, item in enumerate(stable_items)])
-            st.text_area("Stable Items", value=final_items_text, height=max(150, len(stable_items)*25), key="bootega_stable_items_display", disabled=True)
+            final_stable_items_text = format_items_with_text(stable_items, st.session_state.previous_items)
+            st.text_area("Stable Items", value=final_stable_items_text, height=max(150, len(stable_items)*25), key="bootega_stable_items_display", disabled=True)
 
         elif not stable_items:
              st.warning("No items remained after bootEGA stability analysis.")
@@ -1280,6 +1298,49 @@ def parse_items_from_text(text_content: str) -> list[str]:
         if item_text: # Ensure we don't add empty strings
             items.append(item_text)
     return items
+
+
+def get_item_text_from_label(item_label: str, confirmed_items: list[str]) -> str:
+    """Maps an 'Item X' label back to the actual item text.
+    
+    Args:
+        item_label: Label in format 'Item X' where X is a number.
+        confirmed_items: List of actual item texts from st.session_state.previous_items.
+        
+    Returns:
+        The actual item text, or the original label if mapping fails.
+    """
+    try:
+        # Extract number from "Item X" format
+        match = re.search(r'Item (\d+)', item_label)
+        if match:
+            item_num = int(match.group(1))
+            # Convert to 0-based index
+            index = item_num - 1
+            if 0 <= index < len(confirmed_items):
+                return confirmed_items[index]
+    except (ValueError, IndexError):
+        pass
+    
+    # Return original label if mapping fails
+    return item_label
+
+
+def format_items_with_text(items: list[str], confirmed_items: list[str]) -> str:
+    """Formats a list of 'Item X' labels with actual item text for display.
+    
+    Args:
+        items: List of item labels in 'Item X' format.
+        confirmed_items: List of actual item texts.
+        
+    Returns:
+        Formatted string with numbered list showing actual item text.
+    """
+    formatted_lines = []
+    for i, item_label in enumerate(items):
+        actual_text = get_item_text_from_label(item_label, confirmed_items)
+        formatted_lines.append(f"{i+1}. {actual_text}")
+    return "\n".join(formatted_lines)
 
 
 def generate_items(
