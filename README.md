@@ -18,7 +18,7 @@ Follow these steps to set up and run SLTItemGen on your local machine.
 
 ### Prerequisites
 
-- **Python 3.11**
+- **Python 3.12**
 - **virtualenv** installed
 - **Git** installed
 
@@ -38,10 +38,10 @@ Follow these steps to set up and run SLTItemGen on your local machine.
 
 3. **Create a Virtual Environment**:
 
-   Using `virtualenv` with Python 3.11:
+   Using `virtualenv` with Python 3.12:
 
    ```bash
-   virtualenv ve -p /usr/bin/python3.11
+   virtualenv ve -p /usr/bin/python3.12
    ```
 
 4. **Activate the Virtual Environment**:

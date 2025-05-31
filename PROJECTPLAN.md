@@ -16,7 +16,7 @@ Ultimately, it will help a PhD student showcase the feasibility of AI‑assisted
 |-------|----------|
 | LLM provider | **OpenAI** (GPT‑4o & `text-embedding-3-small`) only, for now |
 | Storage | Local filesystem (JSON/Parquet) — no external DB |
-| Languages | **Python ≥3.11**; *no R dependencies* |
+| Languages | **Python ≥3.12**; *no R dependencies* |
 | Users | Primarily the supervising PhD student; low concurrency |
 | Deployment | Streamlit Community Cloud |
 | Budget | Minimal; stay within free‑tier where possible |
