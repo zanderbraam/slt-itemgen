@@ -473,3 +473,13 @@ This fix ensures the CSV export functionality works as intended, providing resea
 *   **Updated PROJECTPLAN.md**: Marked all Phase 6 tasks as complete, moving project towards Phase 7 (Deployment & Polish).
 
 *   **Benefits**: This completes the high-priority Phase 6 deliverable, providing researchers with publication-quality PDF reports that include all analysis results, visualizations, and technical details needed for academic work, grant applications, and clinical documentation. The professional formatting ensures reports are suitable for sharing with stakeholders, supervisors, and research collaborators.
+
+## [Date TBD] - PDF Report Refinement: Network Plot Item Numbers
+
+*   **Enhanced PDF Network Visualization**:
+    *   Modified `generate_network_plot_for_pdf()` function to always display item numbers on network nodes.
+    *   Implemented the same label extraction logic used in the main UI (extracts numbers from "Item X" format).
+    *   Set font size to 10pt for optimal readability in PDF format.
+    *   Ensures PDF reports provide clear item identification for easier cross-referencing with item tables.
+
+*   **Technical Implementation**: Uses regex pattern `r'\d+$'` to extract item numbers from node labels, with fallback to full node name if pattern not found. Labels are always displayed regardless of the UI toggle state, ensuring consistent PDF output for professional documentation.

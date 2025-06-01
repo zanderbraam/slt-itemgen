@@ -9,6 +9,7 @@ import io
 import tempfile
 from datetime import datetime
 from typing import Any
+import re  # Import needed for label extraction
 
 import matplotlib.pyplot as plt
 import networkx as nx
@@ -298,6 +299,17 @@ def generate_network_plot_for_pdf(
         nx.draw_networkx_nodes(graph, pos, node_color='skyblue', 
                               node_size=300, alpha=0.8, ax=ax)
         nx.draw_networkx_edges(graph, pos, alpha=0.5, edge_color='grey', ax=ax)
+    
+    # Always show item number labels in PDF (extract number from 'Item X' format)
+    labels = {}
+    for node in graph.nodes():
+        # Attempt to extract number if label is like 'Item X'
+        match = re.search(r'\d+$', str(node))
+        if match:
+            labels[node] = match.group(0)
+        else:
+            labels[node] = str(node)  # Fallback to full node name
+    nx.draw_networkx_labels(graph, pos, labels=labels, font_size=10, ax=ax)
     
     ax.set_title(title, fontsize=16, fontweight='bold', pad=20)
     ax.axis('off')
