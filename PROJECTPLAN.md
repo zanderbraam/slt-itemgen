@@ -123,9 +123,9 @@ graph TD
     - [x] UI: Display final NMI and compare it to the initial NMI from Phase 3.
 
 ### Phase 6 — Visualisation & Export
-- [ ] Collate plots into single PDF (`reportlab`)
-- [ ] Export CSV of final items (+ metadata: cluster, stability, wTO)
-- [ ] "Download report" & "Download items" buttons in UI
+- [x] Collate plots into single PDF (`reportlab`)
+- [x] Export CSV of final items (+ metadata: cluster, stability, wTO)
+- [x] "Download report" & "Download items" buttons in UI
 
 ### Phase 7 — Deployment & Polish
 - [ ] Add Streamlit Cloud secrets instructions & safety checks

@@ -41,6 +41,7 @@ from src.export import (
     get_item_text_from_label,
     format_items_with_text
 )
+from src.pdf_report import generate_pdf_report
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -1414,10 +1415,77 @@ def main():
             except Exception as e:
                 st.error(f"Error generating removed items CSV: {e}")
 
-        # Future PDF export placeholder
+        # PDF Report Generation
         st.divider()
         st.subheader("📄 PDF Report")
-        st.info("PDF report functionality will be available in Phase 6.2 (coming soon).")
+        st.caption("Comprehensive analysis report with visualizations and results")
+
+        try:
+            # Check if we have sufficient data for a meaningful report
+            items_available = bool(st.session_state.get("previous_items"))
+            network_available = any(st.session_state.get(f"graph_{method}_{matrix}") 
+                                  for method in ['tmfg', 'glasso'] 
+                                  for matrix in ['dense', 'sparse'])
+            
+            if items_available:
+                # Show report preview information
+                focus_area = st.session_state.get("focus_area_selectbox", "Unknown")
+                initial_count = len(st.session_state.get("previous_items", []))
+                final_count = len(st.session_state.get("bootega_stable_items", []))
+                
+                col_preview1, col_preview2 = st.columns(2)
+                with col_preview1:
+                    st.metric("Report Scope", focus_area)
+                    st.metric("Initial Items", initial_count)
+                with col_preview2:
+                    st.metric("Analysis Status", 
+                             "Complete" if final_count > 0 else "Partial")
+                    st.metric("Final Items", final_count if final_count > 0 else "N/A")
+                
+                # Generate PDF button
+                if st.button("📄 Generate PDF Report", type="primary", 
+                           help="Creates a comprehensive PDF report with all analysis results"):
+                    with st.spinner("Generating PDF report... This may take a moment."):
+                        try:
+                            pdf_content = generate_pdf_report()
+                            
+                            # Success message and download
+                            st.success("✅ PDF report generated successfully!")
+                            
+                            # Create download button
+                            timestamp = pd.Timestamp.now().strftime('%Y%m%d_%H%M')
+                            filename = f"SLTItemGen_Analysis_Report_{timestamp}.pdf"
+                            
+                            st.download_button(
+                                label="📥 Download PDF Report",
+                                data=pdf_content,
+                                file_name=filename,
+                                mime="application/pdf",
+                                key="download_pdf_report"
+                            )
+                            
+                            # Show report summary
+                            st.info(f"📊 Report includes: Cover page, executive summary, methodology, "
+                                   f"generated items, network analysis, UVA results, bootEGA results, "
+                                   f"and technical appendix.")
+                                   
+                        except ImportError as ie:
+                            st.error("PDF generation requires additional libraries. Please install reportlab:")
+                            st.code("pip install reportlab")
+                            
+                        except Exception as e:
+                            st.error(f"Error generating PDF report: {e}")
+                            with st.expander("Show error details"):
+                                st.code(traceback.format_exc())
+                            
+            else:
+                st.info("Generate and confirm items (Section 3) to enable PDF report generation.")
+                st.caption("PDF report will include all available analysis results")
+                
+        except Exception as e:
+            st.error(f"Error in PDF report section: {e}")
+            with st.expander("Show error details"):
+                st.code(traceback.format_exc())
 
     elif uva_completed:
         st.info("UVA analysis completed. Run bootEGA (Section 8) to enable full export functionality.")
