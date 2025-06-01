@@ -1,41 +1,6 @@
 import re
 
-# --- Default Examples ---
-
-# Define default examples here so they can be reused or overridden
-DEFAULT_POSITIVE_EXAMPLES = (
-    "POSITIVE EXAMPLES (Items to emulate):\n"
-    "- The child seems more motivated to engage in social interaction.\n"
-    "- The child seems more willing to continue during a social interaction.\n"
-    "- The child shows intent to continue attending social interaction.\n"
-    "- The child seems willing to be challenged during social interactions.\n"
-    "- The child seems willing to use (or not use) AAC to communicate with others in specific situations.\n"
-    "- The child seems to be motivated to communicate.\n"
-    "- The child initiates doing an activity with others.\n"
-    "- The child seems interested in a social activity.\n"
-    "- The child seems to persist in social interaction.\n"
-    "- The child seems to show excitement during a communicative activity.\n"
-    "- The child seems to portray positive body language.\n"
-    "- The child seems to portray a positive energy level during a communicative activity.\n"
-    "- The child is actively taking part in a communicative activity.\n"
-    "- The child contributes to the discussion during a communicative activity.\n"
-    "- The child is asking questions during a communicative activity.\n"
-    "- The child is making suggestions during a communicative activity.\n"
-    "- The child seems to be listening or observing attentively during a communicative activity.\n"
-    "- The child seems to be taking the lead during a communicative activity.\n"
-    "- The child expresses or is willing to try new things during a communicative activity.\n"
-    "- The child seems to desire to communicate with others in specific situations."
-)
-
-DEFAULT_NEGATIVE_EXAMPLES = (
-    "NEGATIVE EXAMPLES (Items to AVOID):\n"
-    "- How well does your child communicate with peers during playtime or group activities? (Avoid direct questions to parent/SLT)\n"
-    "- To what degree does your child initiate and sustain conversations with friends? (Avoid direct questions)\n"
-    "- How often does your child successfully understand and respond to social cues from peers? (Avoid frequency/success ratings)\n"
-    "- How effectively does your child ask for help when needed in various settings? (Avoid effectiveness ratings)\n"
-    "- To what extent does your child use communication strategies to express their feelings or concerns? (Avoid extent ratings)\n"
-    "- How often does your child use alternative communication methods (e.g., gestures, pictures) when verbal communication is challenging? (Avoid frequency/method focus)"
-)
+# Hard-coded prompting constants and helper functions for psychometric item generation
 
 # --- Prompt Construction Functions ---
 
@@ -53,29 +18,31 @@ def create_system_prompt(
     Args:
         persona: The AI persona description.
         background_info: Context about the target domain and use case.
-        positive_examples: Formatted string of positive examples.
-        negative_examples: Formatted string of negative examples.
+        positive_examples: User-provided string of positive examples.
+        negative_examples: User-provided string of negative examples.
         previous_items: List of items generated previously in the session.
         forbidden_words_str: User-provided string of forbidden words (one per line).
-        is_big_five_test: Flag indicating if the focus is Big Five.
+        is_big_five_test: Flag indicating if the focus is Big Five (deprecated, kept for compatibility).
 
     Returns:
         A tuple containing:
             - The fully constructed system prompt string.
             - A list of forbidden words derived from forbidden_words_str.
     """
-    # Format Examples
+    # Format Examples (only if provided by user)
     positive_examples_formatted = ""
-    if positive_examples and not positive_examples.strip().lower().startswith("positive examples"):
-        positive_examples_formatted = f"POSITIVE EXAMPLES (Items to emulate):\n{positive_examples.strip()}"
-    elif positive_examples:
-        positive_examples_formatted = positive_examples.strip()
+    if positive_examples and positive_examples.strip():
+        if not positive_examples.strip().lower().startswith("positive examples"):
+            positive_examples_formatted = f"POSITIVE EXAMPLES (Items to emulate):\n{positive_examples.strip()}"
+        else:
+            positive_examples_formatted = positive_examples.strip()
 
     negative_examples_formatted = ""
-    if negative_examples and not negative_examples.strip().lower().startswith("negative examples"):
-        negative_examples_formatted = f"NEGATIVE EXAMPLES (Items to AVOID):\n{negative_examples.strip()}"
-    elif negative_examples:
-        negative_examples_formatted = negative_examples.strip()
+    if negative_examples and negative_examples.strip():
+        if not negative_examples.strip().lower().startswith("negative examples"):
+            negative_examples_formatted = f"NEGATIVE EXAMPLES (Items to AVOID):\n{negative_examples.strip()}"
+        else:
+            negative_examples_formatted = negative_examples.strip()
 
     # Format Duplicate Avoidance Prompt
     duplicate_avoidance_prompt = ""
@@ -102,6 +69,8 @@ def create_system_prompt(
         "Your task is to generate high-quality psychometric items based on the user request.",
         f"\nBACKGROUND INFO:\n{background_info}"
     ]
+    
+    # Add examples only if provided by user
     if positive_examples_formatted:
         system_prompt_parts.append(f"\n{positive_examples_formatted}")
     if negative_examples_formatted:
@@ -110,8 +79,9 @@ def create_system_prompt(
     system_prompt_parts.append(duplicate_avoidance_prompt) # Add even if empty for structure
     system_prompt_parts.append(forbidden_words_prompt) # Add even if empty
 
-    # Add general instructions based on focus area
+    # Add general instructions - single, flexible set
     if is_big_five_test:
+        # Legacy Big Five handling (deprecated but kept for compatibility)
         system_prompt_parts.append(
             "\nINSTRUCTIONS:\n"
             "1. FOLLOW the user's request to generate items for the specified Big Five trait.\n"
@@ -120,16 +90,16 @@ def create_system_prompt(
             "4. Adhere strictly to the duplicate avoidance and forbidden words instructions.\n"
             "5. OUTPUT ONLY the generated items as a numbered list (e.g., '1. Item text\\n2. Item text'). DO NOT include any other text, preamble, or explanation."
         )
-    else: # Communicative Participation
+    else:
+        # General psychometric assessment instructions
         system_prompt_parts.append(
             "\nINSTRUCTIONS:\n"
-            "1. FOLLOW the user's request to generate items for the specified focus area.\n"
-            "2. Generate items that are OBSERVATIONAL statements about a child (e.g., 'The child seems...', 'The child initiates...').\n"
-            "3. Ensure items are appropriate for children aged 6-11 with communication difficulties.\n"
-            "4. Maintain a neutral, objective tone.\n"
-            "5. AVOID direct questions, frequency ratings, or effectiveness judgments (see NEGATIVE EXAMPLES if provided).\n"
-            "6. Adhere strictly to the duplicate avoidance and forbidden words instructions.\n"
-            "7. OUTPUT ONLY the generated items as a numbered list (e.g., '1. Item text\\n2. Item text'). DO NOT include any other text, preamble, or explanation."
+            "1. FOLLOW the user's request to generate items for the specified assessment domain.\n"
+            "2. Generate items appropriate for the target population and assessment context described in the user's instructions.\n"
+            "3. Maintain a professional, neutral tone suitable for psychometric assessment.\n"
+            "4. Ensure items are clear, concise, and measurable.\n"
+            "5. Adhere strictly to the duplicate avoidance and forbidden words instructions.\n"
+            "6. OUTPUT ONLY the generated items as a numbered list (e.g., '1. Item text\\n2. Item text'). DO NOT include any other text, preamble, or explanation."
         )
 
     system_prompt = "\n".join(system_prompt_parts)

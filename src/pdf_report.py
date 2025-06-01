@@ -343,7 +343,7 @@ def generate_pdf_report() -> bytes:
         story.append(Spacer(1, 0.5*inch))
         
         # Analysis metadata
-        focus_area = st.session_state.get("focus_area_selectbox", "Unknown")
+        focus_area = st.session_state.get("assessment_topic", "Unknown")
         story.append(Paragraph(f"<b>Focus Area:</b> {focus_area}", styles['CenteredNormal']))
         story.append(Paragraph(f"<b>Generated:</b> {datetime.now().strftime('%B %d, %Y at %I:%M %p')}", 
                               styles['CenteredNormal']))
@@ -610,7 +610,7 @@ def generate_pdf_report() -> bytes:
         story.append(Paragraph("Analysis Configuration", styles['Heading2']))
         
         config_data = {
-            'Focus Area': st.session_state.get("focus_area_selectbox", "Unknown"),
+            'Focus Area': st.session_state.get("assessment_topic", "Unknown"),
             'LLM Model': "GPT-4o",
             'Embedding Model': "text-embedding-3-small",
             'Network Method': st.session_state.get("network_method_select", "Unknown"),

@@ -483,3 +483,83 @@ This fix ensures the CSV export functionality works as intended, providing resea
     *   Ensures PDF reports provide clear item identification for easier cross-referencing with item tables.
 
 *   **Technical Implementation**: Uses regex pattern `r'\d+$'` to extract item numbers from node labels, with fallback to full node name if pattern not found. Labels are always displayed regardless of the UI toggle state, ensuring consistent PDF output for professional documentation.
+
+## [Date TBD] - Major Refactor: Shift to User-Driven Prompt System
+
+**Context**: Following user feedback requesting removal of fixed dropdown list and implementation of freeform prompt capabilities for maximum assessment flexibility.
+
+**Problem**: The existing system used hardcoded dropdown options (e.g., "Big Five", "Communicative Participation") which limited users to predefined assessment domains and prevented custom assessment development.
+
+**Solution Implemented**: Complete architectural shift from preset topic model to user-driven prompt model while preserving all backend safeguards and functionality.
+
+### **UI/UX Changes (Section 1)**:
+*   **Removed** hardcoded dropdown menu with predefined options (`options` array and `specific_prompts` dictionary)
+*   **Added** `st.text_input` for "Assessment Topic" (organizational/labeling purposes)
+*   **Added** `st.text_area` for "Custom Prompt Instructions" (detailed user specifications)
+*   **Enhanced** validation logic to require both topic and custom prompt before enabling generation
+*   **Added** helpful placeholder examples and guidance text for user onboarding
+
+### **Backend Architecture Changes**:
+*   **Modified** `generate_items()` function signature:
+    *   Replaced `prompt_focus: str` parameter with `topic: str` and `custom_prompt: str`
+    *   Removed dependency on `specific_prompts` dictionary lookup
+    *   Added intelligent persona detection based on prompt content analysis
+*   **Implemented** dynamic persona selection logic:
+    *   Child-focused assessments: Detects keywords like "child", "children", "communication"
+    *   Adult personality assessments: Detects "personality", "big five", "adult", "self-report"
+    *   General psychometric assessment: Default fallback for other domains
+*   **Updated** user prompt construction to use custom instructions directly instead of template substitution
+
+### **Prompt Engineering Enhancements**:
+*   **Enhanced** `src/prompting.py` with `is_child_focused` parameter for better instruction customization
+*   **Added** three-tier instruction system:
+    *   Legacy Big Five handling (deprecated but maintained for compatibility)
+    *   Child-focused assessments with observational statement requirements
+    *   General psychometric assessment with flexible population targeting
+*   **Maintained** all existing safeguards:
+    *   Duplicate avoidance using `previous_items`
+    *   Forbidden words filtering with regex boundary matching
+    *   Professional formatting constraints and output structure requirements
+
+### **Export/Reporting System Updates**:
+*   **Updated** all session state references from `focus_area_selectbox` to `assessment_topic`:
+    *   `app.py`: PDF report preview section
+    *   `src/export.py`: Analysis summary CSV generation
+    *   `src/pdf_report.py`: Cover page and technical appendix sections
+*   **Ensured** backward compatibility with existing analysis pipeline and export functionality
+
+### **Quality Assurance Features**:
+*   **Preserved** all core functionality:
+    *   Temperature and Top P parameter controls
+    *   Optional positive/negative examples and forbidden words
+    *   Advanced prompting options in expandable section
+    *   Complete 6-phase AI-GENIE pipeline compatibility
+*   **Enhanced** user guidance with validation messages and capability hints
+*   **Maintained** professional assessment standards and output quality controls
+
+### **Key Benefits Achieved**:
+1. **Maximum Flexibility**: Users can now assess any domain with custom instructions without code modifications
+2. **Intelligent Adaptation**: System automatically detects assessment type and adapts persona/instructions appropriately  
+3. **Professional Standards**: All quality controls, formatting requirements, and psychometric best practices preserved
+4. **Seamless Integration**: Zero impact on downstream analysis phases (EGA, UVA, bootEGA, export/reporting)
+5. **Enhanced UX**: Clear guidance, validation feedback, and intuitive workflow progression
+
+### **Example Usage Scenarios Enabled**:
+*   *"Generate items to measure social anxiety in adolescents during peer interactions"*
+*   *"Create assessment items for reading comprehension difficulties in elementary students"*  
+*   *"Develop items measuring workplace communication effectiveness for adults with autism"*
+*   *"Generate observational items for executive function skills in preschoolers"*
+
+### **Technical Implementation Notes**:
+*   User prompt format: `f"Generate {n} items based on the following instructions:\n\n{custom_prompt.strip()}"`
+*   Persona detection uses keyword matching with `any(keyword in custom_prompt.lower() for keyword in [...])`
+*   Background info dynamically incorporates user-provided topic: `f"TARGET DOMAIN: {topic}\n"`
+*   Backward compatibility maintained through `is_big_five_test=False` parameter in `create_system_prompt()`
+
+### **Files Modified**:
+*   `app.py`: Main UI refactor, generate_items() function signature and logic
+*   `src/prompting.py`: Enhanced create_system_prompt() with is_child_focused parameter and three-tier instructions
+*   `src/export.py`: Updated session state key references for topic retrieval
+*   `src/pdf_report.py`: Updated topic references in report generation
+
+**Result**: Successfully transformed SLTItemGen from a domain-specific tool to a flexible, general-purpose psychometric item generation platform while maintaining all professional standards and analytical capabilities. Users can now develop assessment instruments for any domain using custom instructions, with the system intelligently adapting its approach based on content analysis.

@@ -183,7 +183,7 @@ def generate_analysis_summary_csv() -> pd.DataFrame:
             int(bootega_n_bootstraps) if not pd.isna(bootega_n_bootstraps) else None,
             round(bootega_stability_threshold, 4) if not pd.isna(bootega_stability_threshold) else None,
             pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S'),
-            st.session_state.get("focus_area_selectbox", "Unknown")
+            st.session_state.get("assessment_topic", "Unknown")
         ]
     }
 

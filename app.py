@@ -14,12 +14,9 @@ import numpy as np
 import scipy.sparse as sp
 
 from src.prompting import (
-    DEFAULT_NEGATIVE_EXAMPLES,
-    DEFAULT_POSITIVE_EXAMPLES,
     create_system_prompt,
-    create_user_prompt,
     parse_generated_items,
-    filter_unique_items,
+    filter_unique_items
 )
 from src.embedding_service import get_dense_embeddings, get_sparse_embeddings_tfidf, memory
 from src.ega_service import (
@@ -77,10 +74,9 @@ st.set_page_config(
 )
 
 def ss(key: str, default):
-    """Helper function to get or set session state values."""
+    """Shorthand for session state initialization."""
     if key not in st.session_state:
         st.session_state[key] = default
-    return st.session_state[key]
 
 def load_local_secrets():
     """Load secrets from secrets.toml for local testing."""
@@ -118,151 +114,12 @@ client = OpenAI(
     api_key=api_key,
 )
 
-# Options and specific prompts
-options = [
-    "Engagement in a communicative activity",
-    "Motivation during a communicative activity",
-    "Persistence in a communicative activity",
-    "Social connection in a communicative activity",
-    "Sense of belonging in a communicative activity",
-    "Affect during a communicative activity",
-    "---", # Separator
-    "TEST: Big Five - Extraversion",
-    "TEST: Big Five - Agreeableness",
-    "TEST: Big Five - Conscientiousness",
-    "TEST: Big Five - Neuroticism",
-    "TEST: Big Five - Openness",
-]
-
-# Define default examples here so they can be reused or overridden
-# MOVED to src/prompting.py
-
-specific_prompts = {
-    "Engagement in a communicative activity": (
-        "Generate {n} items to measure a child with communication difficulties' engagement in "
-        "a communicative activity where knowledge, information, ideas, and feelings are exchanged."
-    ),
-    "Motivation during a communicative activity": (
-        "Generate {n} items to measure a child with communication difficulties' motivation during "
-        "a communicative activity where knowledge, information, ideas, and feelings are exchanged."
-    ),
-    "Persistence in a communicative activity": (
-        "Generate {n} items to measure a child with communication difficulties' persistence in "
-        "a communicative activity where knowledge, information, ideas, and feelings are exchanged."
-    ),
-    "Social connection in a communicative activity": (
-        "Generate {n} items to measure a child with communication difficulties' social connection in "
-        "a communicative activity where knowledge, information, ideas, and feelings are exchanged."
-    ),
-    "Sense of belonging in a communicative activity": (
-        "Generate {n} items to measure a child with communication difficulties' sense of belonging in "
-        "a communicative activity where knowledge, information, ideas, and feelings are exchanged."
-    ),
-    "Affect during a communicative activity": (
-        "Generate {n} items to measure a child with communication difficulties' affect during "
-        "a communicative activity where knowledge, information, ideas, and feelings are exchanged."
-    ),
-    # Add Big Five test prompts (Placeholders - refine if needed)
-    "TEST: Big Five - Extraversion": (
-        "Generate {n} items measuring the personality trait Extraversion (e.g., friendly, positive, assertive, energetic). "
-        "Items should be suitable for general adult self-report."
-    ),
-    "TEST: Big Five - Agreeableness": (
-        "Generate {n} items measuring the personality trait Agreeableness (e.g., cooperative, compassionate, trustworthy, humble). "
-        "Items should be suitable for general adult self-report."
-    ),
-    "TEST: Big Five - Conscientiousness": (
-        "Generate {n} items measuring the personality trait Conscientiousness (e.g., organized, responsible, disciplined, prudent). "
-        "Items should be suitable for general adult self-report."
-    ),
-    "TEST: Big Five - Neuroticism": (
-        "Generate {n} items measuring the personality trait Neuroticism (e.g., anxious, depressed, insecure, emotional). "
-        "Items should be suitable for general adult self-report."
-    ),
-    "TEST: Big Five - Openness": (
-        "Generate {n} items measuring the personality trait Openness (e.g., creative, perceptual, curious, philosophical). "
-        "Items should be suitable for general adult self-report."
-    ),
-}
-
-
-def plot_network_with_communities(
-    graph: nx.Graph,
-    membership: dict[str | int, int],
-    pos: dict | None = None,
-    title: str = "Network with Communities",
-    ax: plt.Axes | None = None,
-    show_labels: bool = False
-) -> None:
-    """Plots the network with nodes colored by community membership.
-
-    Args:
-        graph: The networkx graph.
-        membership: Dictionary mapping node ID to community ID. Assumes -1 for isolated nodes.
-        pos: Optional layout for nodes (e.g., from nx.spring_layout). If None, calculates spring layout.
-        title: Title for the plot.
-        ax: Matplotlib axes object to plot on. If None, uses current axes.
-        show_labels: If True, display node labels (item numbers).
-    """
-    if ax is None:
-        ax = plt.gca()
-
-    if pos is None:
-        pos = nx.spring_layout(graph, seed=42)  # Use a fixed seed for reproducibility
-
-    # Prepare node colors based on community membership
-    node_colors = []
-    unique_communities = sorted(list(set(membership.values())))
-    # Define a color map (e.g., viridis, tab10, etc.)
-    # Exclude -1 from the communities used for colormap generation
-    valid_communities = [c for c in unique_communities if c != -1]
-    cmap = plt.get_cmap('viridis', max(1, len(valid_communities)))  # Ensure at least 1 color
-
-    # Create a mapping from community ID to color
-    color_map = {comm_id: cmap(i) for i, comm_id in enumerate(valid_communities)}
-    color_map[-1] = 'grey'  # Assign grey to isolated nodes (community -1)
-
-    for node in graph.nodes():
-        community_id = membership.get(node, -1) # Default to -1 if node somehow missing
-        node_colors.append(color_map[community_id])
-
-    nx.draw_networkx_nodes(graph, pos, node_color=node_colors, node_size=300, alpha=0.8, ax=ax)
-    nx.draw_networkx_edges(graph, pos, alpha=0.5, edge_color='grey', ax=ax)
-
-    # Conditionally draw labels (extract number from 'Item X' format)
-    if show_labels:
-        labels = {}
-        for node in graph.nodes():
-            # Attempt to extract number if label is like 'Item X'
-            match = re.search(r'\d+$', str(node))
-            if match:
-                labels[node] = match.group(0)
-            else:
-                labels[node] = str(node) # Fallback to full node name
-        nx.draw_networkx_labels(graph, pos, labels=labels, font_size=8, ax=ax)
-
-    ax.set_title(title)
-    ax.axis('off')
-
-    # Add legend
-    legend_handles = []
-    # Add isolated node entry first if present
-    if -1 in unique_communities:
-        legend_handles.append(plt.Line2D([0], [0], marker='o', color='w', label='Isolated',
-                                         markerfacecolor='grey', markersize=10))
-    # Add other communities
-    for comm_id in valid_communities:
-        legend_handles.append(plt.Line2D([0], [0], marker='o', color='w', label=f'Community {comm_id}',
-                                         markerfacecolor=color_map[comm_id], markersize=10))
-
-    if legend_handles:
-        ax.legend(handles=legend_handles, title="Communities", loc='best')
-
+# --- Helper Functions ---
 
 def main():
     st.title("SLTItemGen: AI-Assisted Psychometric Item Generator")
     st.write("""
-        Generate custom items for communicative participation or test Big Five generation.
+        Generate custom items for any assessment domain using AI-assisted analysis.
         Follows principles from the AI-GENIE paper (van Lissa et al., 2024).
         """)
 
@@ -309,6 +166,9 @@ def main():
     ss("bootega_error", None)
     ss("bootega_status", "Not Run")
     ss("bootega_final_community_membership", None)
+
+    # Reset confirmation state
+    ss("show_reset_confirmation", False)
 
     # --- Helper Function for Clearing State ---
     def clear_downstream_state(from_section: int):
@@ -358,12 +218,26 @@ def main():
             st.session_state.item_pool_text = ""
             st.session_state.previous_items = []
 
-    # --- Section 1: Select Focus and Parameters ---
-    st.header("1. Select Focus and Parameters")
-    selected_option = st.selectbox(
-        "Select a focus area for the items:",
-        options,
-        key="focus_area_selectbox"
+    # --- Section 1: Define Assessment Topic and Prompt ---
+    st.header("1. Define Assessment Topic and Prompt")
+    
+    # Topic input for organizational/labeling purposes
+    topic = st.text_input(
+        "Assessment Topic:",
+        value="",
+        placeholder="e.g., 'Communicative Participation', 'Social Skills', 'Reading Comprehension'",
+        help="This topic will be used for labeling and organizing your analysis results.",
+        key="assessment_topic"
+    )
+    
+    # Custom prompt area for user instructions
+    custom_prompt = st.text_area(
+        "Custom Prompt Instructions:",
+        value="",
+        placeholder="Describe what you want to measure and provide any specific context or instructions for item generation...\n\nExample:\n'Generate items to measure a child's engagement in communicative activities where knowledge, information, ideas, and feelings are exchanged. Focus on observable behaviors that indicate active participation.'",
+        height=150,
+        help="Provide detailed instructions about what you want to measure, the target population, context, and any specific requirements for the items.",
+        key="custom_prompt_instructions"
     )
 
     n_items = st.slider(
@@ -399,15 +273,21 @@ def main():
 
     # --- Section 2: (Optional) Customize Prompting ---
     st.header("2. (Optional) Customize Prompting")
+    
+    # Initialize optional variables with default values (in case expander isn't opened)
+    user_positive_examples = ""
+    user_negative_examples = ""
+    user_forbidden_words = ""
+    
     with st.expander("Advanced Prompting Options"):
         user_positive_examples = st.text_area(
             "Positive Examples (Good Items - one per line)",
-            placeholder="(Optional) Provide examples of the types of items you WANT.\nIf left blank, defaults for the selected focus area will be used (if applicable).",
+            placeholder="(Optional) Provide examples of the types of items you WANT.\nIf left blank, no specific positive examples will be used.",
             height=150,
         )
         user_negative_examples = st.text_area(
             "Negative Examples (Bad Items - one per line)",
-            placeholder="(Optional) Provide examples of the types of items you want to AVOID.\nIf left blank, defaults for the selected focus area will be used (if applicable).",
+            placeholder="(Optional) Provide examples of the types of items you want to AVOID.\nIf left blank, no specific negative examples will be used.",
             height=150,
         )
         user_forbidden_words = st.text_area(
@@ -422,15 +302,20 @@ def main():
     # Display Generation Controls
     col_gen1, col_gen2 = st.columns([1, 1])
     with col_gen1:
-        if st.button("Generate New Items", type="primary", disabled=st.session_state.items_confirmed):
-            if selected_option == "---":
-                st.warning("Please select a valid focus area.")
+        # Check if both topic and custom prompt are provided
+        can_generate = bool(topic.strip() and custom_prompt.strip())
+        if st.button("Generate New Items", type="primary", disabled=st.session_state.items_confirmed or not can_generate):
+            if not topic.strip():
+                st.warning("Please provide an assessment topic.")
+            elif not custom_prompt.strip():
+                st.warning("Please provide custom prompt instructions.")
             else:
                 with st.spinner('Generating items...'):
                     # Use current items from text area for duplicate checking
                     current_items_in_text = parse_items_from_text(st.session_state.item_pool_text)
                     new_items = generate_items(
-                        prompt_focus=selected_option,
+                        topic=topic,
+                        custom_prompt=custom_prompt,
                         n=n_items,
                         temperature=temperature,
                         top_p=top_p,
@@ -448,6 +333,9 @@ def main():
                         # Don't rerun here, let user confirm
                     else:
                         st.error("Failed to generate new items. Check OpenAI status or API key.")
+        
+        if not can_generate:
+            st.caption("💡 Provide both topic and prompt instructions to enable generation.")
 
     with col_gen2:
         if st.button("Clear Item History & Start Over", disabled=st.session_state.items_confirmed):
@@ -1429,7 +1317,7 @@ def main():
             
             if items_available:
                 # Show report preview information
-                focus_area = st.session_state.get("focus_area_selectbox", "Unknown")
+                focus_area = st.session_state.get("assessment_topic", "Unknown")
                 initial_count = len(st.session_state.get("previous_items", []))
                 final_count = len(st.session_state.get("bootega_stable_items", []))
                 
@@ -1610,7 +1498,8 @@ def parse_items_from_text(text_content: str) -> list[str]:
 
 
 def generate_items(
-    prompt_focus: str,
+    topic: str,
+    custom_prompt: str,
     n: int,
     temperature: float,
     top_p: float,
@@ -1619,62 +1508,48 @@ def generate_items(
     negative_examples: str | None = None,
     forbidden_words_str: str | None = None,
 ) -> list[str]:
-    """Generates psychometric items using OpenAI's GPT model based on a focus area.
+    """Generates psychometric items using OpenAI's GPT model based on custom user prompts.
 
-    Applies prompt engineering techniques including persona priming, few-shot
-    examples (default or user-provided), adaptive prompting (duplicate avoidance),
+    Applies prompt engineering techniques including persona priming,
+    user-provided examples, adaptive prompting (duplicate avoidance),
     and forbidden words, based on the AI-GENIE methodology.
 
     Args:
-        prompt_focus: The specific construct to generate items for (from specific_prompts keys).
+        topic: The assessment topic/domain for organizational purposes.
+        custom_prompt: User-provided custom instructions for item generation.
         n: The target number of unique items to generate in this batch.
         temperature: The creativity/randomness setting for the LLM (0.0 to 1.5).
         top_p: The nucleus sampling parameter for the LLM (0.0 to 1.0).
         previous_items: A list of already generated items in this session to avoid duplicates.
         positive_examples: Optional user-provided string of positive examples (one per line).
-                         If None, defaults are used for communicative participation focus.
         negative_examples: Optional user-provided string of negative examples (one per line).
-                         If None, defaults are used for communicative participation focus.
         forbidden_words_str: Optional user-provided string of forbidden words (one per line).
 
     Returns:
         A list of newly generated unique items, or an empty list if an error occurs.
-
-    Raises:
-        ValueError: If the prompt_focus is not found in the predefined prompts.
     """
     try:
-        # 1. Create User Prompt
-        user_prompt_instruction = create_user_prompt(prompt_focus, n, specific_prompts)
+        # 1. Create User Prompt based on custom instructions
+        user_prompt_instruction = f"Generate {n} items that measure {topic}.\n\n{custom_prompt.strip()}\n\nReturn ONLY a numbered list - one item per line - no headings or commentary."
 
-        # 2. Determine Persona, Background, and Examples based on focus
-        is_big_five_test = prompt_focus.startswith("TEST: Big Five")
-        if is_big_five_test:
-            persona = "You are an expert psychometrician and test developer specializing in personality assessment."
-            background_info = "TARGET DOMAIN: Big Five Personality Traits (Adult Self-Report)"
-            positive_examples_to_use = positive_examples or "" # No defaults for Big Five yet
-            negative_examples_to_use = negative_examples or "" # No defaults for Big Five yet
-        else:
-            persona = "You are an expert psychometrician and test developer specializing in pediatric speech-language therapy and communicative participation assessment."
-            background_info = (
-                "TARGET DOMAIN: Communicative participation outcomes of children aged 6-11 with communication difficulties.\n"
-                "DEFINITION: Communicative participation involves participating in life situations where knowledge, information, ideas, "
-                "and feelings are exchanged. It means understanding and being understood in social contexts using verbal or non-verbal communication skills.\n"
-                "EXAMPLES: Participating in group activities, playing with friends, initiating conversations, school/community involvement, engaging in play.\n"
-                "INTENDED USE: Measurement instrument for speech-language therapists (SLTs) and parents."
-            )
-            positive_examples_to_use = positive_examples or DEFAULT_POSITIVE_EXAMPLES
-            negative_examples_to_use = negative_examples or DEFAULT_NEGATIVE_EXAMPLES
+        # 2. Use a single, general persona for all assessments
+        persona = "You are an expert psychometrician and test developer specializing in psychological and behavioral assessment."
+        background_info = (
+            f"TARGET DOMAIN: {topic}\n"
+            "CONTEXT: Psychometric assessment instrument development.\n"
+            "INTENDED USE: Professional psychological assessment."
+        )
 
         # 3. Construct System Prompt & Get Forbidden Words List
+        # Only use user-provided examples (no defaults)
         system_prompt, forbidden_words_list = create_system_prompt(
             persona=persona,
             background_info=background_info,
-            positive_examples=positive_examples_to_use,
-            negative_examples=negative_examples_to_use,
+            positive_examples=positive_examples,  # Use only user-provided examples
+            negative_examples=negative_examples,  # Use only user-provided examples
             previous_items=previous_items,
             forbidden_words_str=forbidden_words_str,
-            is_big_five_test=is_big_five_test
+            is_big_five_test=False  # Deprecated parameter, always False
         )
 
         # 4. Prepare messages for the API call
@@ -1707,6 +1582,79 @@ def generate_items(
         st.error(f"An error occurred during item generation: {e}")
         st.error(traceback.format_exc()) # Print full traceback for debugging
         return []
+
+
+def plot_network_with_communities(
+    graph: nx.Graph,
+    membership: dict[str | int, int],
+    pos: dict | None = None,
+    title: str = "Network with Communities",
+    ax: plt.Axes | None = None,
+    show_labels: bool = False
+) -> None:
+    """Plots the network with nodes colored by community membership.
+
+    Args:
+        graph: The networkx graph.
+        membership: Dictionary mapping node ID to community ID. Assumes -1 for isolated nodes.
+        pos: Optional layout for nodes (e.g., from nx.spring_layout). If None, calculates spring layout.
+        title: Title for the plot.
+        ax: Matplotlib axes object to plot on. If None, uses current axes.
+        show_labels: If True, display node labels (item numbers).
+    """
+    if ax is None:
+        ax = plt.gca()
+
+    if pos is None:
+        pos = nx.spring_layout(graph, seed=42)  # Use a fixed seed for reproducibility
+
+    # Prepare node colors based on community membership
+    node_colors = []
+    unique_communities = sorted(list(set(membership.values())))
+    # Define a color map (e.g., viridis, tab10, etc.)
+    # Exclude -1 from the communities used for colormap generation
+    valid_communities = [c for c in unique_communities if c != -1]
+    cmap = plt.get_cmap('viridis', max(1, len(valid_communities)))  # Ensure at least 1 color
+
+    # Create a mapping from community ID to color
+    color_map = {comm_id: cmap(i) for i, comm_id in enumerate(valid_communities)}
+    color_map[-1] = 'grey'  # Assign grey to isolated nodes (community -1)
+
+    for node in graph.nodes():
+        community_id = membership.get(node, -1) # Default to -1 if node somehow missing
+        node_colors.append(color_map[community_id])
+
+    nx.draw_networkx_nodes(graph, pos, node_color=node_colors, node_size=300, alpha=0.8, ax=ax)
+    nx.draw_networkx_edges(graph, pos, alpha=0.5, edge_color='grey', ax=ax)
+
+    # Conditionally draw labels (extract number from 'Item X' format)
+    if show_labels:
+        labels = {}
+        for node in graph.nodes():
+            # Attempt to extract number if label is like 'Item X'
+            match = re.search(r'\d+$', str(node))
+            if match:
+                labels[node] = match.group(0)
+            else:
+                labels[node] = str(node) # Fallback to full node name
+        nx.draw_networkx_labels(graph, pos, labels=labels, font_size=8, ax=ax)
+
+    ax.set_title(title)
+    ax.axis('off')
+
+    # Add legend
+    legend_handles = []
+    # Add isolated node entry first if present
+    if -1 in unique_communities:
+        legend_handles.append(plt.Line2D([0], [0], marker='o', color='w', label='Isolated',
+                                         markerfacecolor='grey', markersize=10))
+    # Add other communities
+    for comm_id in valid_communities:
+        legend_handles.append(plt.Line2D([0], [0], marker='o', color='w', label=f'Community {comm_id}',
+                                         markerfacecolor=color_map[comm_id], markersize=10))
+
+    if legend_handles:
+        ax.legend(handles=legend_handles, title="Communities", loc='best')
 
 
 # ==============================================
