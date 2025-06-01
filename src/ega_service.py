@@ -8,18 +8,18 @@ and calculating fit metrics for the EGA pipeline.
 
 import numpy as np
 import scipy.sparse as sp
+from scipy.sparse import csr_matrix
 from sklearn.metrics.pairwise import cosine_similarity
 import networkx as nx
 from sklearn.covariance import GraphicalLassoCV, shrunk_covariance
 from sklearn.exceptions import ConvergenceWarning
 import warnings
 import random
-import pandas as pd # Import pandas
 from collections import defaultdict
-from collections.abc import Callable # Import Callable
+from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor
-import time # For potential progress updates
-import traceback # For detailed error logging
+import time
+import traceback
 import re
 
 # Attempt to import optional igraph and set a flag
@@ -32,11 +32,11 @@ except ImportError:
 
 def label_to_index(label: str) -> int:
     """
-    Convert 'Item N' → N-1.
+    Convert 'Item N' → N-1, handling spaces, underscores, and hyphens.
     Raise ValueError if the pattern is absent.
 
     Args:
-        label: Item label like "Item 17"
+        label: Item label like "Item 17", "Item_17", or "Item-17"
 
     Returns:
         Zero-based index (e.g., "Item 17" → 16)
@@ -44,13 +44,14 @@ def label_to_index(label: str) -> int:
     Raises:
         ValueError: If label doesn't match the expected pattern
     """
-    m = re.search(r'\bItem\s+(\d+)\b', label)
+    m = re.search(r'\bItem[_\s-]*?(\d+)\b', label)
     if not m:
         raise ValueError(f"Cannot parse item label: {label!r}")
     return int(m.group(1)) - 1
 
 def calculate_similarity_matrix(
     embeddings: np.ndarray | sp.spmatrix,
+    dense_output: bool = True,
 ) -> np.ndarray:
     """Calculates the cosine similarity matrix for a given set of embeddings.
 
@@ -58,6 +59,8 @@ def calculate_similarity_matrix(
         embeddings: A matrix where rows represent items and columns represent
             embedding dimensions. Can be a dense NumPy array or a sparse
             SciPy matrix.
+        dense_output: If True, returns dense array. If False and input is sparse,
+            attempts to return sparse result to save memory.
 
     Returns:
         A square NumPy array of shape (n_items, n_items) containing the
@@ -97,16 +100,25 @@ def calculate_similarity_matrix(
         # Need at least 2 items to calculate pairwise similarity
         return np.array([[1.0]]) if embeddings.shape[0] == 1 else np.array([[]])
 
-
-    # Calculate cosine similarity
-    similarity_matrix = cosine_similarity(embeddings)
+    # Calculate cosine similarity with appropriate output format
+    if sp.issparse(embeddings) and not dense_output:
+        # Try to keep sparse for memory efficiency
+        try:
+            similarity_matrix = cosine_similarity(embeddings, dense_output=False)
+            # Convert to dense for post-processing since we need to modify diagonal
+            if sp.issparse(similarity_matrix):
+                similarity_matrix = similarity_matrix.toarray()
+        except TypeError:
+            # Fallback if dense_output parameter not supported
+            similarity_matrix = cosine_similarity(embeddings)
+    else:
+        similarity_matrix = cosine_similarity(embeddings)
 
     # Ensure diagonal is exactly 1.0 (cosine_similarity might have minor precision issues)
     np.fill_diagonal(similarity_matrix, 1.0)
 
     # Clip values to [-1.0, 1.0] just in case of floating point errors
     similarity_matrix = np.clip(similarity_matrix, -1.0, 1.0)
-
 
     return similarity_matrix
 
@@ -316,6 +328,7 @@ def construct_ebicglasso_network(
     assume_centered: bool = False,
     cv: int = 5, # Number of cross-validation folds
     max_iter: int = 100,
+    force_similarity: bool = False,
 ) -> nx.Graph:
     """Constructs a network using Graphical LASSO with Cross-Validation (EBICglasso variant).
 
@@ -335,6 +348,9 @@ def construct_ebicglasso_network(
                          a similarity/correlation matrix.
         cv: Number of cross-validation folds used by GraphicalLassoCV.
         max_iter: Maximum number of iterations for GraphicalLassoCV.
+        force_similarity: If True, allows using similarity matrices (e.g., cosine similarity)
+                         instead of covariance matrices. If False, raises an error if the
+                         matrix appears to be a similarity matrix (diagonal ≈ 1).
 
     Returns:
         A networkx.Graph object representing the GGM.
@@ -343,14 +359,15 @@ def construct_ebicglasso_network(
         Edge weights represent the partial correlation derived from the precision matrix.
 
     Raises:
-        ValueError: If inputs are invalid (matrix not square, label mismatch, etc.).
+        ValueError: If inputs are invalid (matrix not square, label mismatch, etc.) or
+                   if matrix appears to be similarity-based and force_similarity=False.
         TypeError: If similarity_matrix is not a NumPy array.
         ImportError: If scikit-learn is not installed.
 
     Notes:
         - GraphicalLassoCV expects a covariance matrix. Using a similarity matrix
-          (like cosine similarity) directly is a common heuristic in network psychometrics
-          when raw data isn't available, but results should be interpreted cautiously.
+          (like cosine similarity) is an approximation when raw scores are unavailable –
+          interpret partial correlations cautiously.
         - ConvergenceWarning may occur if max_iter is too low.
     """
     if not isinstance(similarity_matrix, np.ndarray):
@@ -370,7 +387,26 @@ def construct_ebicglasso_network(
     else:
         node_ids = list(range(n_items))
 
-    # 1) Shrink covariance, 2) add tiny jitter to force SPD:
+    # Check if matrix appears to be similarity-based (diagonal close to 1)
+    diagonal_values = np.diag(similarity_matrix)
+    is_similarity_like = np.allclose(diagonal_values, 1.0, atol=0.1)
+    
+    if is_similarity_like and not force_similarity:
+        raise ValueError(
+            "Input matrix appears to be similarity-based (diagonal ≈ 1) rather than a covariance matrix. "
+            "GraphicalLasso expects covariance matrices. If you intend to use similarity matrices, "
+            "set force_similarity=True, but interpret partial correlations cautiously."
+        )
+    
+    if is_similarity_like and force_similarity:
+        warnings.warn(
+            "Using similarity matrix with GraphicalLasso is an approximation when raw scores are "
+            "unavailable – interpret partial correlations cautiously. Consider using TMFG if you have "
+            "concerns about this approximation.",
+            UserWarning
+        )
+
+    # 1) Shrink covariance
     try:
         shrunk_sim_matrix = shrunk_covariance(similarity_matrix)
     except Exception as e:
@@ -378,16 +414,17 @@ def construct_ebicglasso_network(
         warnings.warn(f"Covariance shrinkage failed ({e}), using raw similarity matrix for Glasso.")
         shrunk_sim_matrix = similarity_matrix.copy()
 
-    # always add a small multiple of the identity, scaled by matrix variation
+    # 2) Calculate jitter amount
     std_dev = np.std(shrunk_sim_matrix[np.triu_indices_from(shrunk_sim_matrix, k=1)]) # Std of off-diagonal elements
     epsilon = 1e-4 * std_dev if std_dev > 1e-8 else 1e-6 # Avoid zero/tiny epsilon
-    shrunk_sim_matrix = shrunk_sim_matrix + np.eye(n_items) * epsilon
 
     # wrap fit in a retry-on-FP-error loop, bolstering jitter if needed
     # Handle potential convergence warnings
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", category=ConvergenceWarning)
         try:
+            # Apply initial jitter
+            jittered_matrix = shrunk_sim_matrix + np.eye(n_items) * epsilon
             model = GraphicalLassoCV(
                 cv=cv,
                 assume_centered=assume_centered,
@@ -395,14 +432,14 @@ def construct_ebicglasso_network(
                 eps=1e-8,  # Keep internal solver regularization
                 n_jobs=-1 # Use all available CPU cores
                 )
-            model.fit(shrunk_sim_matrix)
+            model.fit(jittered_matrix)
         except FloatingPointError:
-            # try again with a larger diagonal penalty
+            # try again with a larger diagonal penalty, computed from original matrix
             epsilon *= 10
-            # Create a *new* matrix with the increased jitter
-            shrunk_sim_matrix_boosted = shrunk_sim_matrix + np.eye(n_items) * epsilon
+            # Create a *new* matrix with the increased jitter from the original shrunk matrix
+            jittered_matrix_boosted = shrunk_sim_matrix + np.eye(n_items) * epsilon
             try:
-                model.fit(shrunk_sim_matrix_boosted)
+                model.fit(jittered_matrix_boosted)
             except FloatingPointError as e2:
                 raise RuntimeError("Even after shrinkage and jittering, GraphicalLasso failed to converge. " +
                                    "The similarity matrix might be too ill-conditioned. Consider using TMFG, " +
@@ -537,7 +574,12 @@ def detect_communities_walktrap(
             return membership, None
 
         # Create subgraph with only positive-strength vertices
-        subgraph = igraph_graph.induced_subgraph(positive_strength_vertices, implementation="create_from_scratch")
+        # Use the more compatible method without implementation parameter
+        try:
+            subgraph = igraph_graph.induced_subgraph(positive_strength_vertices)
+        except TypeError:
+            # Fallback for older igraph versions
+            subgraph = igraph_graph.subgraph(positive_strength_vertices)
 
     except Exception as e:
          raise RuntimeError(f"Failed during node strength calculation or subgraph creation: {e}") from e
@@ -577,7 +619,12 @@ def detect_communities_walktrap(
         raise RuntimeError(f"Failed during Walktrap community detection: {e}") from e
 
 
-def calculate_tefi(similarity_matrix: np.ndarray, membership: dict[str | int, int]) -> float:
+def calculate_tefi(
+    similarity_matrix: np.ndarray, 
+    membership: dict[str | int, int],
+    *,
+    item_order: list[str] | None = None,
+) -> float:
     """Calculates the Total Entropy Fit Index (TEFI) variant.
 
     This variant calculates the standardized difference between the average
@@ -587,9 +634,11 @@ def calculate_tefi(similarity_matrix: np.ndarray, membership: dict[str | int, in
 
     Args:
         similarity_matrix: The original (n_items, n_items) similarity matrix.
-        membership: A dictionary mapping node IDs (matching matrix indices/labels if applicable)
-                    to community IDs. Assumes community IDs are integers, potentially including -1
+        membership: A dictionary mapping node IDs to community IDs. 
+                    Assumes community IDs are integers, potentially including -1
                     for isolated nodes which are ignored in this calculation.
+        item_order: Explicit list defining the order of items corresponding to 
+                   matrix rows/columns. If None, uses dict insertion order with warning.
 
     Returns:
         The TEFI score (float). Returns np.nan if calculation is not possible
@@ -603,12 +652,24 @@ def calculate_tefi(similarity_matrix: np.ndarray, membership: dict[str | int, in
     if n_items == 0:
         return np.nan
 
-    # Assume membership keys correspond to matrix indices 0 to n-1
-    # If item_labels were used, mapping might be needed, but app.py passes
-    # membership keys matching the original item order/labels.
-    # We need to map node IDs (potentially strings like "Item 1") to matrix indices (0..n-1).
-    # Let's create the index mapping based on the order in membership keys if needed,
-    # assuming the similarity matrix rows/cols correspond to the item order.
+    # Get node list with explicit ordering or fallback to dict keys
+    if item_order is not None:
+        node_list = item_order
+        # Validate that all items in item_order are in membership
+        missing_items = [item for item in item_order if item not in membership]
+        if missing_items:
+            raise ValueError(f"Items in item_order not found in membership: {missing_items}")
+    else:
+        node_list = list(membership.keys())
+        warnings.warn(
+            "TEFI is inferring item order from dict insertion order; "
+            "pass `item_order` explicitly to avoid mismatches.",
+            RuntimeWarning,
+        )
+
+    if len(node_list) != n_items:
+        raise ValueError(f"Mismatch between number of items in membership ({len(node_list)}) "
+                         f"and similarity matrix dimension ({n_items}).")
 
     # Get unique, valid community IDs (exclude -1 for isolated nodes)
     valid_communities = {cid for cid in membership.values() if cid != -1}
@@ -620,16 +681,6 @@ def calculate_tefi(similarity_matrix: np.ndarray, membership: dict[str | int, in
 
     within_community_similarities = []
     between_community_similarities = []
-
-    # Create a mapping from node ID (key in membership) to its 0-based index
-    # Assumes the order of items in similarity_matrix matches the order they were added
-    # which corresponds to the keys in membership (if generated from item_labels)
-    node_list = list(membership.keys()) # Get node IDs in a fixed order
-    node_to_index = {node_id: i for i, node_id in enumerate(node_list)}
-
-    if len(node_to_index) != n_items:
-        raise ValueError(f"Mismatch between number of items in membership ({len(node_to_index)}) "
-                         f"and similarity matrix dimension ({n_items}).")
 
     # Iterate through unique pairs of nodes (upper triangle of similarity matrix)
     for i_idx in range(n_items):
@@ -854,17 +905,21 @@ def remove_redundant_items_uva(
 # Top-level helper function for bootEGA parallel processing
 # ============================================================
 def _run_bootstrap_single(
-    args: tuple[int, list[str], np.ndarray | sp.csr_matrix, str, dict, dict, int | None]
+    args: tuple[int, list[str], np.ndarray | csr_matrix, str, dict, dict, int | None]
 ) -> tuple[list[str], dict[str, int] | None]:
-    """Runs a single bootstrap iteration for bootEGA.
+    """Runs a single bootstrap iteration for item stability analysis.
 
-    Designed to be called by ProcessPoolExecutor.map.
+    This function performs item-level bootstrap resampling (sampling items with replacement)
+    rather than traditional case/participant-level resampling. This approach is specifically
+    designed for analyzing the stability of item community assignments in psychometric networks.
+
+    Designed to be called by ProcessPoolExecutor.map for parallel execution.
 
     Args:
         args: A tuple containing:
             iteration_seed (int): Seed for this specific bootstrap iteration.
             original_items (list[str]): The full list of items being analyzed.
-            original_embeddings (np.ndarray | sp.csr_matrix): The embedding matrix corresponding to original_items.
+            original_embeddings (np.ndarray | csr_matrix): The embedding matrix corresponding to original_items.
             network_method (str): 'tmfg' or 'glasso'.
             network_params (dict): Parameters for network construction.
             walktrap_params (dict): Parameters for Walktrap community detection.
@@ -875,6 +930,11 @@ def _run_bootstrap_single(
             - sampled_item_list (list[str]): The *unique* items included in the bootstrap sample.
             - community_membership (dict[str, int] | None): Dictionary mapping unique item labels
               in the sample to their detected community ID, or None if EGA failed.
+              
+    Note:
+        The resampling draws items with replacement, then reduces to unique items for analysis.
+        This ensures that the same item can appear multiple times in the raw sample but is
+        analyzed only once in the final network construction.
     """
     (
         iteration_seed,
@@ -954,7 +1014,7 @@ def _run_bootstrap_single(
 # ============================================================
 def run_bootega_resampling(
     items: list[str],
-    embeddings: np.ndarray | sp.csr_matrix,
+    embeddings: np.ndarray | csr_matrix,
     network_method: str, # 'tmfg' or 'glasso'
     network_params: dict,
     walktrap_params: dict,
@@ -962,11 +1022,46 @@ def run_bootega_resampling(
     sample_size: int | None = None,
     use_parallel: bool = True,
     max_workers: int | None = None,
-    progress_callback: Callable | None = None # Use Callable
+    progress_callback: Callable | None = None
 ) -> list[tuple[list[str], dict[str, int] | None]]:
-    """Performs N bootstrap resampling iterations of the EGA pipeline.
-    Uses the top-level _run_bootstrap_single helper function.
-    (Docstring details omitted for brevity, same as before)
+    """Performs N bootstrap resampling iterations for item stability analysis.
+    
+    This function implements ITEM-LEVEL bootstrap resampling (not case/participant-level)
+    where each bootstrap sample consists of items drawn with replacement from the original
+    item pool. This is appropriate for analyzing the stability of item community assignments
+    in psychometric networks.
+
+    Note: This differs from traditional EGA bootstrap that resamples participants/cases.
+    The current approach is designed specifically for item stability analysis in the
+    context of instrument development and item reduction.
+
+    Args:
+        items: List of item labels to resample from.
+        embeddings: Embedding matrix where each row corresponds to an item in `items`.
+        network_method: Either 'tmfg' or 'glasso' for network construction.
+        network_params: Dictionary of parameters passed to network construction function.
+        walktrap_params: Dictionary of parameters passed to Walktrap community detection.
+        n_bootstrap: Number of bootstrap iterations to perform.
+        sample_size: Size of each bootstrap sample. If None, uses len(items).
+        use_parallel: Whether to use multiprocessing for parallel execution.
+        max_workers: Maximum number of worker processes. If None, uses system default.
+        progress_callback: Optional function called with (percentage, message) for progress updates.
+
+    Returns:
+        List of tuples, each containing:
+        - sampled_items (list[str]): Unique items in the bootstrap sample
+        - community_membership (dict[str, int] | None): Community assignments or None if EGA failed
+
+    Example:
+        >>> # Resample items for stability analysis
+        >>> results = run_bootega_resampling(
+        ...     items=['Item_1', 'Item_2', 'Item_3'],
+        ...     embeddings=item_embeddings,
+        ...     network_method='glasso',
+        ...     network_params={'force_similarity': True},
+        ...     walktrap_params={'steps': 4},
+        ...     n_bootstrap=100
+        ... )
     """
     bootstrap_results = []
 
@@ -1041,7 +1136,7 @@ def perform_bootega_stability_analysis(
     sample_size: int | None = None,
     use_parallel: bool = True,
     max_workers: int | None = None,
-    progress_callback: Callable | None = None, # Use Callable
+    progress_callback: Callable | None = None,
     verbose: bool = False # Added for potential logging
 ) -> tuple[list[str], dict[str, float], list[tuple[str, float, int]]]:
     """Performs iterative bootEGA stability analysis.
@@ -1240,7 +1335,7 @@ if __name__ == '__main__':
     print("\nTesting construct_ebicglasso_network...")
     try:
         # Using assume_centered=True for similarity matrix input typically
-        glasso_graph = construct_ebicglasso_network(sim_dense, item_labels=test_items, assume_centered=True)
+        glasso_graph = construct_ebicglasso_network(sim_dense, item_labels=test_items, assume_centered=True, force_similarity=True)
         print(f"EBICglasso graph nodes: {glasso_graph.number_of_nodes()}, edges: {glasso_graph.number_of_edges()}")
         assert glasso_graph.number_of_nodes() == 10
         # Number of edges varies based on data and lasso alpha
@@ -1269,7 +1364,9 @@ if __name__ == '__main__':
     print("\nTesting calculate_tefi...")
     if 'membership' in locals():
         try:
-            tefi_score = calculate_tefi(sim_dense, membership)
+            # Pass explicit item order to avoid deprecation warning
+            item_order = list(membership.keys())
+            tefi_score = calculate_tefi(sim_dense, membership, item_order=item_order)
             print(f"TEFI score: {tefi_score:.4f}")
             assert isinstance(tefi_score, float)
             print("TEFI calculation basic check passed.")
@@ -1319,7 +1416,7 @@ if __name__ == '__main__':
 
             print(f"Running bootEGA resampling on {len(items_for_bootega)} items...")
             # Example parameters (adjust as needed)
-            boot_network_params = {'assume_centered': True, 'cv': 3} # Fewer CV folds for testing
+            boot_network_params = {'assume_centered': True, 'cv': 3, 'force_similarity': True} # Fewer CV folds for testing
             boot_walktrap_params = {'steps': 4}
 
             # Run sequentially first for easier debugging if needed
@@ -1388,7 +1485,7 @@ if __name__ == '__main__':
             else:
                 print(f"Running bootEGA stability analysis on {len(items_after_uva)} items...")
                 # Example parameters
-                boot_network_params = {'assume_centered': True, 'cv': 3}
+                boot_network_params = {'assume_centered': True, 'cv': 3, 'force_similarity': True}
                 boot_walktrap_params = {'steps': 4}
 
                 stable_items, final_scores, removed_log = perform_bootega_stability_analysis(

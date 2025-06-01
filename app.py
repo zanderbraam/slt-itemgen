@@ -716,7 +716,8 @@ def main():
                         graph = construct_ebicglasso_network(
                             selected_sim_matrix,
                             item_labels=item_labels,
-                            assume_centered=True # Important when using similarity matrix
+                            assume_centered=True, # Important when using similarity matrix
+                            force_similarity=True # Explicitly allow similarity matrices
                         )
                         st.session_state[graph_state_key] = graph
                         st.success(f"EBICglasso network constructed successfully from {input_matrix_type} data!")
@@ -787,7 +788,14 @@ def main():
                         if membership_dict is not None:
                             # Now calculate TEFI using the result and the original similarity matrix
                             try:
-                                tefi_score = calculate_tefi(selected_sim_matrix, membership_dict)
+                                # Pass explicit item order to avoid dict insertion order issues
+                                # Use the confirmed items as the reference order (matches how labels were created)
+                                item_order = [f"Item {i+1}" for i in range(len(st.session_state.previous_items))]
+                                tefi_score = calculate_tefi(
+                                    selected_sim_matrix, 
+                                    membership_dict, 
+                                    item_order=item_order
+                                )
                                 st.session_state[tefi_key] = tefi_score # Use consistent key
                                 st.success(f"Walktrap detected {len(set(m for m in membership_dict.values() if m != -1))} communities. TEFI calculated: {tefi_score:.4f}")
                             except ValueError as ve:
@@ -1161,7 +1169,12 @@ def main():
                         if method_prefix == "tmfg":
                             final_graph = construct_tmfg_network(final_similarity_matrix, item_labels=stable_items)
                         else: # ebicglasso
-                            final_graph = construct_ebicglasso_network(final_similarity_matrix, item_labels=stable_items, **network_params)
+                            final_graph = construct_ebicglasso_network(
+                                final_similarity_matrix, 
+                                item_labels=stable_items, 
+                                force_similarity=True,
+                                **network_params
+                            )
 
                         # 3. Re-detect communities
                         final_community_membership, final_clustering = detect_communities_walktrap(final_graph, **walktrap_params)
