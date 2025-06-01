@@ -20,6 +20,7 @@ from collections.abc import Callable # Import Callable
 from concurrent.futures import ProcessPoolExecutor
 import time # For potential progress updates
 import traceback # For detailed error logging
+import re
 
 # Attempt to import optional igraph and set a flag
 try:
@@ -28,6 +29,25 @@ try:
 except ImportError:
     IGRAPH_AVAILABLE = False
     # We won't raise an error here, but functions relying on igraph will.
+
+def label_to_index(label: str) -> int:
+    """
+    Convert 'Item N' → N-1.
+    Raise ValueError if the pattern is absent.
+
+    Args:
+        label: Item label like "Item 17"
+
+    Returns:
+        Zero-based index (e.g., "Item 17" → 16)
+
+    Raises:
+        ValueError: If label doesn't match the expected pattern
+    """
+    m = re.search(r'\bItem\s+(\d+)\b', label)
+    if not m:
+        raise ValueError(f"Cannot parse item label: {label!r}")
+    return int(m.group(1)) - 1
 
 def calculate_similarity_matrix(
     embeddings: np.ndarray | sp.spmatrix,
@@ -489,6 +509,7 @@ def detect_communities_walktrap(
                 weight_list.append(weight_val)
             igraph_graph.add_edges(edge_list)
             igraph_graph.es['weight'] = weight_list
+
         else:
             # Add edges without weights
             igraph_graph.add_edges(
@@ -509,8 +530,10 @@ def detect_communities_walktrap(
         membership = {node_map_ig_to_nx[v_idx]: -1 for v_idx in zero_strength_vertices}
 
         if not positive_strength_vertices:
-            print("Warning: No nodes with positive strength found. Skipping Walktrap.")
             # All nodes are isolated or form components with 0-weight edges only
+            # Ensure all nodes are marked as isolated
+            for nx_node in nx_nodes:
+                membership[nx_node] = -1
             return membership, None
 
         # Create subgraph with only positive-strength vertices
@@ -527,7 +550,6 @@ def detect_communities_walktrap(
 
         # Check if the subgraph has edges before running Walktrap
         if subgraph.ecount() == 0:
-            print("Warning: Subgraph for Walktrap has no edges. Assigning all nodes to community 0.")
             # Treat all nodes in the subgraph as a single community
             clustering = None # No meaningful clustering object
             subgraph_membership = {v.index: 0 for v in subgraph.vs} # Assign community 0
@@ -537,7 +559,6 @@ def detect_communities_walktrap(
                 weights=subgraph_weights, steps=steps
             ).as_clustering()
             subgraph_membership = {v.index: mem for v, mem in zip(subgraph.vs, clustering.membership)}
-
 
         # Map subgraph vertex indices back to original igraph vertex indices
         # Then map original igraph indices back to original networkx node IDs
@@ -552,12 +573,8 @@ def detect_communities_walktrap(
 
         return membership, clustering
 
-    except ig.InternalError as e:
-        # Catch specific igraph errors if possible, e.g., "negative edge weights"
-        # The zero strength error should be preempted by the check above.
-        raise RuntimeError(f"igraph Walktrap algorithm failed: {e}") from e
     except Exception as e:
-        raise RuntimeError(f"An unexpected error occurred during Walktrap community detection: {e}") from e
+        raise RuntimeError(f"Failed during Walktrap community detection: {e}") from e
 
 
 def calculate_tefi(similarity_matrix: np.ndarray, membership: dict[str | int, int]) -> float:
@@ -661,53 +678,54 @@ def calculate_tefi(similarity_matrix: np.ndarray, membership: dict[str | int, in
 
 # --- Placeholder for NMI --- #
 def calculate_nmi(membership1: dict[str | int, int], membership2: dict[str | int, int]) -> float:
-    """Calculates the Normalized Mutual Information (NMI) between two community structures.
+    """Calculates the Normalized Mutual Information (NMI) between two clustering solutions.
 
-    Requires two membership dictionaries (mapping node ID to community ID) for the same set of nodes.
+    Compares how much information is shared between two different community
+    assignments of the same set of nodes. NMI values range from 0 (completely
+    different) to 1 (identical clustering).
 
     Args:
-        membership1: The first membership dictionary.
-        membership2: The second membership dictionary.
+        membership1: First clustering solution mapping node IDs to community IDs.
+        membership2: Second clustering solution mapping node IDs to community IDs.
+                     Must have the same node IDs as membership1.
 
     Returns:
-        The NMI score (float between 0 and 1).
+        NMI score as a float between 0 and 1. Returns np.nan if calculation fails
+        or if memberships are incompatible.
 
     Raises:
-        NotImplementedError: As NMI calculation between different structures
-                           is intended for later phases (e.g., Phase 5).
-        ValueError: If the node sets in the two memberships differ.
         ImportError: If scikit-learn is not installed.
+        ValueError: If memberships have different node sets.
     """
-    # NMI calculation will be implemented properly in Phase 5/6 when needed.
-    # For now, raise error or return NaN to indicate it's not applicable yet.
-    # raise NotImplementedError("NMI calculation requires two community structures, typically calculated in Phase 5 or 6.")
-
-    # --- OR --- Return NaN as a placeholder that can be handled in the UI
-    # Check if scikit-learn is available for the eventual implementation
     try:
         from sklearn.metrics import normalized_mutual_info_score
     except ImportError:
-         print("Warning: scikit-learn not installed. NMI calculation will not be possible.")
-         return np.nan # Cannot calculate NMI without sklearn
+        raise ImportError("NMI calculation requires scikit-learn. Please install it.")
 
-    # Basic check: Do memberships cover the same nodes?
+    # Ensure both memberships have the same nodes
     nodes1 = set(membership1.keys())
     nodes2 = set(membership2.keys())
+
     if nodes1 != nodes2:
-        raise ValueError("Node sets in the two membership dictionaries must be identical for NMI calculation.")
+        raise ValueError(f"Memberships have different node sets: {nodes1 - nodes2} vs {nodes2 - nodes1}")
 
-    if not nodes1: # Handle empty memberships
-        return 1.0 if not nodes2 else 0.0 # NMI is 1 if both are empty, 0 if one is empty
+    # Get the common nodes and ensure consistent ordering
+    common_nodes = sorted(list(nodes1))  # Use sorted for deterministic ordering
 
-    # Ensure consistent node ordering for label lists
-    ordered_nodes = sorted(list(nodes1))
-    labels1 = [membership1[node] for node in ordered_nodes]
-    labels2 = [membership2[node] for node in ordered_nodes]
+    # Extract labels in the same order
+    labels1 = [membership1[node] for node in common_nodes]
+    labels2 = [membership2[node] for node in common_nodes]
+
+    if len(labels1) == 0:
+        return np.nan
 
     # Calculate NMI
-    # Use average_method='arithmetic' as is common
-    nmi_score = normalized_mutual_info_score(labels1, labels2, average_method='arithmetic')
-    return nmi_score
+    try:
+        nmi_score = normalized_mutual_info_score(labels1, labels2)
+        return float(nmi_score)
+    except Exception as e:
+        import traceback
+        return np.nan
 
 
 def remove_redundant_items_uva(
@@ -1074,18 +1092,19 @@ def perform_bootega_stability_analysis(
             print(f"Items remaining: {len(current_items)}")
 
         if not current_items:
-            if verbose: print("No items left to analyze.")
+            if verbose:
+                print("No items left to analyze.")
             break
 
         # 1. Run Bootstrap Resampling on Current Items
         # Need embeddings corresponding to *current_items*
         try:
-            current_indices = [initial_items.index(item) for item in current_items if item in initial_items]
+            current_indices = [label_to_index(lbl) for lbl in current_items]
             if not current_indices:
-                 raise ValueError("Could not find indices for any current items in the initial list.")
+                raise ValueError("Could not map any current items to indices.")
             current_embeddings = original_embeddings[current_indices, :]
         except ValueError as e:
-             print(f"Error getting embeddings for current items in iteration {iteration}: {e}")
+             print(f"Error mapping current item labels in iteration {iteration}: {e}")
              # Decide how to handle: maybe break or return current state?
              # For now, let's break, assuming something is wrong.
              break
@@ -1150,7 +1169,8 @@ def perform_bootega_stability_analysis(
 
         if not unstable_items:
             # All remaining items are stable
-            if verbose: print(f"All {len(current_items)} items stable at threshold {stability_threshold}. bootEGA finished.")
+            if verbose:
+                print(f"All {len(current_items)} items stable at threshold {stability_threshold}. bootEGA finished.")
             break # Exit the while loop
         else:
             # 4. Remove the *least* stable item below the threshold
@@ -1385,7 +1405,7 @@ if __name__ == '__main__':
                     verbose=True # Added for potential logging
                 )
 
-                print(f"\nbootEGA Stability Results:")
+                print("\nbootEGA Stability Results:")
                 print(f"  Stable Items ({len(stable_items)}): {stable_items}")
                 print(f"  Final Stability Scores: { {k: round(v, 3) for k, v in final_scores.items()} }")
                 print(f"  Removed Items ({len(removed_log)}): { [(i, round(s, 3)) for i, s in removed_log] }")

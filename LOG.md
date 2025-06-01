@@ -294,3 +294,94 @@
         *   "Final Stable Item Pool" text area shows numbered list with actual item sentences.
 
 *   **Benefits**: These improvements significantly enhance user experience by showing meaningful item content instead of opaque labels, making results more interpretable and actionable for researchers and practitioners.
+
+## [Date TBD] - Phase 6.1: CSV Export Implementation
+
+*   **Implemented comprehensive CSV export functionality in Section 9**:
+    *   Added three specialized CSV generation functions with full error handling and validation.
+    *   Created dynamic export interface that adapts based on analysis completion status.
+    *   Integrated actual item text mapping throughout all export functions.
+
+*   **CSV Export Functions**:
+    *   `generate_final_items_csv()`: Complete dataset with stable items, community assignments, stability scores, retention status, and metadata.
+    *   `generate_analysis_summary_csv()`: Pipeline metrics (TEFI, NMI, counts), configuration parameters, and key statistics in structured format.
+    *   `generate_removed_items_csv()`: Detailed log of items filtered during UVA and bootEGA stages with removal reasons and scores.
+
+*   **Export Interface Features**:
+    *   **Full Pipeline Export (after bootEGA)**: Three-column layout with individual CSV downloads, data previews, and record counts.
+    *   **Partial Export (after UVA only)**: Basic CSV with UVA results to support intermediate workflow needs.
+    *   **Smart File Naming**: Automatic timestamping (e.g., `final_items_20241218_1430.csv`) for version control.
+    *   **Data Validation**: Comprehensive error handling with user-friendly error messages for edge cases.
+
+*   **Key CSV Features**:
+    *   **Final Items CSV**: 12 columns including `Item_Text`, `Community_ID`, `Stability_Score`, `UVA_Retained`, `bootEGA_Retained`, `Embedding_Method`, etc.
+    *   **Analysis Summary CSV**: 18 key metrics in name-value pairs covering item counts, network metrics, parameters, and configuration.
+    *   **Removed Items CSV**: Full traceability with `Removal_Stage`, `Removal_Reason`, `Score`, and `Iteration` for both UVA and bootEGA filtering.
+
+*   **User Experience Enhancements**:
+    *   Real-time data previews showing first few rows before download.
+    *   Clear status indicators and download counts (e.g., "Preview: 43 total items").
+    *   Intuitive emoji-based section headers and helpful captions.
+    *   Graceful handling of edge cases (no stable items, missing data, etc.).
+
+*   This completes the **High Priority** portion of Phase 6, providing researchers with production-ready CSV exports for further analysis, publication, and practical application.
+
+## [Date TBD] - Critical Bug Fix: CSV Community ID Issue
+
+**Issue:** Every item in the exported CSV file was incorrectly assigned `Community ID = -1`, regardless of actual community detection results.
+
+**Root Cause Analysis:**
+*   **Data Type Mismatch**: The `stable_items` variable contained node labels like `"Item 17"`, `"Item 18"` (created during network construction), while `st.session_state.previous_items` contained actual item texts like `"I speak clearly when I'm excited."`
+*   **Faulty Index Mapping**: The code attempted to find item labels in actual item texts:
+    ```python
+    stable_indices = [st.session_state.previous_items.index(item) for item in stable_items if item in st.session_state.previous_items]
+    ```
+*   **Empty Results**: This always resulted in `stable_indices = []` because strings like `"Item 17"` are never found in actual item texts
+*   **Cascade Failure**: Empty `stable_indices` caused the final EGA reconstruction to skip, leaving `bootega_final_community_membership = None` and defaulting all items to `Community ID = -1` in CSV export
+*   **Duplicate Bug**: The same issue existed in `src/ega_service.py` in the `perform_bootega_stability_analysis` function
+
+**Solution Implemented:**
+1. **Added `label_to_index()` Helper Function** (in both `app.py` and `src/ega_service.py`):
+   ```python
+   def label_to_index(label: str) -> int:
+       """Convert 'Item N' → N-1. Raise ValueError if pattern absent."""
+       m = re.search(r'\bItem\s+(\d+)\b', label)
+       if not m:
+           raise ValueError(f"Cannot parse item label: {label!r}")
+       return int(m.group(1)) - 1
+   ```
+
+2. **Fixed Index Mapping in bootEGA Final EGA** (`app.py` line ~1139):
+   ```python
+   # Before (broken):
+   stable_indices = [st.session_state.previous_items.index(item) for item in stable_items if item in st.session_state.previous_items]
+   
+   # After (fixed):
+   stable_indices = [label_to_index(lbl) for lbl in stable_items]
+   ```
+
+3. **Fixed Index Mapping in bootEGA Stability Analysis** (`src/ega_service.py` line ~1136):
+   ```python
+   # Before (broken):
+   current_indices = [initial_items.index(item) for item in current_items if item in initial_items]
+   
+   # After (fixed):
+   current_indices = [label_to_index(lbl) for lbl in current_items]
+   ```
+
+4. **Code Cleanup**: Removed all debug statements (`st.write("🔬 **DEBUG**...")` and `print("DEBUG...")`) from production code across:
+   *   `app.py`: Community detection, bootEGA final EGA, CSV export functions
+   *   `src/ega_service.py`: Walktrap detection, NMI calculation, bootstrap functions
+
+**Testing Results:**
+*   CSV export now correctly assigns community IDs (e.g., 0, 1, 2) instead of universal `-1`
+*   Final EGA reconstruction runs successfully on stable items
+*   Community sizes and stability scores populate correctly
+*   No impact on other pipeline functionality
+
+**Files Modified:**
+*   `app.py`: Added `label_to_index()`, fixed 2 index mapping bugs, removed debug statements
+*   `src/ega_service.py`: Added `label_to_index()`, fixed 1 index mapping bug, removed debug statements
+*   `LOG.md`: Documented issue and resolution
+
+This fix ensures the CSV export functionality works as intended, providing researchers with accurate community assignments for stable items after the full bootEGA pipeline.

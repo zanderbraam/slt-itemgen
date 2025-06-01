@@ -3,6 +3,8 @@ import toml
 import re
 import traceback
 import logging
+import time
+from pathlib import Path
 
 import streamlit as st
 from openai import OpenAI, APIError
@@ -10,6 +12,7 @@ import networkx as nx
 import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
+import scipy.sparse as sp
 
 from src.prompting import (
     DEFAULT_NEGATIVE_EXAMPLES,
@@ -41,6 +44,33 @@ CACHE_DIR = "./.joblib_cache"
 if not os.path.exists(CACHE_DIR):
     os.makedirs(CACHE_DIR)
 # memory is already imported from embedding_service, assuming it's initialized there
+
+# Configure Streamlit page (must be first Streamlit command)
+st.set_page_config(
+    page_title="SLTItemGen",
+    page_icon="🧠",
+    layout="centered",
+    initial_sidebar_state="auto"
+)
+
+def label_to_index(label: str) -> int:
+    """
+    Convert 'Item N' → N-1.
+    Raise ValueError if the pattern is absent.
+
+    Args:
+        label: Item label like "Item 17"
+
+    Returns:
+        Zero-based index (e.g., "Item 17" → 16)
+
+    Raises:
+        ValueError: If label doesn't match the expected pattern
+    """
+    m = re.search(r'\bItem\s+(\d+)\b', label)
+    if not m:
+        raise ValueError(f"Cannot parse item label: {label!r}")
+    return int(m.group(1)) - 1
 
 def load_local_secrets():
     """Load secrets from secrets.toml for local testing."""
@@ -748,6 +778,7 @@ def main():
                             current_graph,
                             weights='weight' # Assuming edges have 'weight' attribute
                         )
+
                         # Store results using consistent keys
                         st.session_state[community_membership_key] = membership_dict
                         st.session_state[community_clustering_key] = clustering_obj # Store clustering object
@@ -784,8 +815,6 @@ def main():
                             except Exception as e_nmi:
                                 # If NMI calculation fails, fall back to NaN
                                 st.session_state[nmi_key] = np.nan
-                        else:
-                            st.session_state[nmi_key] = np.nan
 
                         st.rerun() # Rerun to update metrics and plot color
                     except ImportError:
@@ -1094,7 +1123,7 @@ def main():
                 use_parallel=use_parallel,
                 max_workers=os.cpu_count() if use_parallel else 1,
                 progress_callback=update_progress, # Pass the callback
-                verbose=True # Enable verbose output for debugging
+                verbose=False # Enable verbose output for debugging
             )
 
             # --- Store Results in Session State ---
@@ -1112,55 +1141,98 @@ def main():
                 # Ensure previous_items exists and is a list before finding indices
                 if isinstance(st.session_state.get('previous_items'), list):
                     try:
-                        stable_indices = [st.session_state.previous_items.index(item) for item in stable_items if item in st.session_state.previous_items]
+                        stable_indices = [label_to_index(lbl) for lbl in stable_items]
                         if not stable_indices:
-                             raise ValueError("Could not find indices for any stable items.")
+                            raise ValueError("Could not map any stable items to indices.")
                     except ValueError as e:
-                        st.warning(f"Error finding indices for stable items: {e}. Skipping final EGA/NMI.")
+                        st.error(f"Error mapping stable item labels: {e}. Skipping final EGA/NMI.")
                         stable_items = [] # Prevent further processing if indices failed
                 else:
-                    st.warning("Original item list ('previous_items') not found or invalid. Skipping final EGA/NMI.")
+                    st.error("Original item list ('previous_items') not found or invalid. Skipping final EGA/NMI.")
                     stable_items = []
 
                 # Proceed only if we have stable items and valid indices
-                if stable_items:
-                    stable_embeddings = selected_embedding_for_bootega[stable_indices]
-                    final_similarity_matrix = calculate_similarity_matrix(stable_embeddings)
+                if stable_items and len(stable_indices) > 2:  # Need at least 3 for meaningful analysis
+                    try:
+                        stable_embeddings = selected_embedding_for_bootega[stable_indices]
+                        final_similarity_matrix = calculate_similarity_matrix(stable_embeddings)
 
-                    # 2. Reconstruct the network
-                    if method_prefix == "tmfg":
-                        final_graph = construct_tmfg_network(final_similarity_matrix, item_labels=stable_items)
-                    else: # ebicglasso
-                        final_graph = construct_ebicglasso_network(final_similarity_matrix, item_labels=stable_items, **network_params)
+                        # 2. Reconstruct the network
+                        if method_prefix == "tmfg":
+                            final_graph = construct_tmfg_network(final_similarity_matrix, item_labels=stable_items)
+                        else: # ebicglasso
+                            final_graph = construct_ebicglasso_network(final_similarity_matrix, item_labels=stable_items, **network_params)
 
-                    # 3. Re-detect communities
-                    final_community_membership, _ = detect_communities_walktrap(final_graph, **walktrap_params)
-                    st.session_state.bootega_final_community_membership = final_community_membership
+                        # 3. Re-detect communities
+                        final_community_membership, final_clustering = detect_communities_walktrap(final_graph, **walktrap_params)
+                        
+                        # Initialize variables for community processing
+                        final_community_assignment = None
+                        valid_communities = set()
 
-                    # 4. Calculate final NMI
-                    if final_community_membership:
-                        # Subset the *original* community membership (already subsetted for UVA items)
-                        # to include only the finally stable items
-                        original_membership_stable_subset = {
-                            item: original_community_membership_subset[item]
-                            for item in stable_items
-                            if item in original_community_membership_subset # Should always be true here
-                        }
-                        # Ensure both dictionaries have the same keys in the same order for NMI
-                        items_for_nmi = sorted(list(stable_items))
-                        labels_true = [original_membership_stable_subset.get(item, -99) for item in items_for_nmi]
-                        labels_pred = [final_community_membership.get(item, -99) for item in items_for_nmi]
+                        if final_community_membership:
+                            # Check if we actually have valid communities (not all isolated)
+                            valid_communities = {c for c in final_community_membership.values() if c != -1}
 
-                        # Use try-except for NMI calculation as sklearn might not be installed
-                        try:
-                            final_nmi = calculate_nmi(labels_true, labels_pred)
-                            st.session_state.bootega_final_nmi = final_nmi
-                        except ImportError:
-                             st.warning("scikit-learn not installed. Cannot calculate final NMI.")
-                             st.session_state.bootega_final_nmi = np.nan
-                        except ValueError as ve:
-                             st.warning(f"Error calculating final NMI: {ve}")
-                             st.session_state.bootega_final_nmi = np.nan
+                            if valid_communities:
+                                # Use the detected communities
+                                final_community_assignment = final_community_membership
+                                num_final_communities = len(valid_communities)
+                            else:
+                                # All nodes are isolated (-1), create fallback
+                                st.warning("Final community detection found only isolated nodes (all community_id = -1). Using single-community fallback.")
+                                final_community_assignment = {item: 0 for item in stable_items}
+                                num_final_communities = 1
+                        else:
+                            # Community detection returned None or empty - create fallback
+                            st.warning("Final community detection failed or returned no communities. Using single-community fallback.")
+                            final_community_assignment = {item: 0 for item in stable_items}
+                            num_final_communities = 1
+
+                        # Store the final community assignment (should never be None at this point)
+                        st.session_state.bootega_final_community_membership = final_community_assignment
+
+                        # 4. Calculate final NMI (now works with either real communities or fallback)
+                        if final_community_assignment:
+                            # Subset the *original* community membership (already subsetted for UVA items)
+                            # to include only the finally stable items
+                            original_membership_stable_subset = {
+                                item: original_community_membership_subset[item]
+                                for item in stable_items
+                                if item in original_community_membership_subset # Should always be true here
+                            }
+
+                            if original_membership_stable_subset:
+                                # Use calculate_nmi function from ega_service
+                                try:
+                                    final_nmi = calculate_nmi(original_membership_stable_subset, final_community_assignment)
+                                    st.session_state.bootega_final_nmi = final_nmi
+                                except ImportError:
+                                     st.warning("scikit-learn not installed. Cannot calculate final NMI.")
+                                     st.session_state.bootega_final_nmi = np.nan
+                                except Exception as e_nmi:
+                                     st.warning(f"Error calculating final NMI: {e_nmi}")
+                                     st.session_state.bootega_final_nmi = np.nan
+                            else:
+                                st.warning("Could not create original membership subset for NMI calculation.")
+                                st.session_state.bootega_final_nmi = np.nan
+                        else:
+                            # This should never happen now, but keep as safety
+                            st.error("Failed to create any community assignment for stable items.")
+                            st.session_state.bootega_final_community_membership = None
+                            st.session_state.bootega_final_nmi = np.nan
+
+                    except Exception as e_final_ega:
+                        st.error(f"Error during final EGA reconstruction: {e_final_ega}")
+                        st.code(traceback.format_exc())
+                        st.session_state.bootega_final_community_membership = None
+                        st.session_state.bootega_final_nmi = np.nan
+                else:
+                    st.warning(f"Not enough stable items ({len(stable_items)}) for final EGA analysis (need ≥3).")
+                    st.session_state.bootega_final_community_membership = None
+                    st.session_state.bootega_final_nmi = np.nan
+            else:
+                st.warning("No stable items found after bootEGA - cannot run final EGA.")
 
             st.session_state.bootega_status = "Completed"
             progress_bar.progress(1.0, text="bootEGA Completed!") # Ensure progress bar finishes
@@ -1261,12 +1333,131 @@ def main():
     # ==============================================
     st.header("9. Export Results")
 
-    # Placeholder - Requires Phase 6 implementation
-    if st.session_state.get("uva_final_items") is not None: # Check if UVA produced results (bootEGA might modify this later)
-        st.info("Export functionality (CSV/PDF report) is planned for Phase 6.")
-        # Add download buttons here later
+    # Check if we have completed the full pipeline
+    bootega_completed = st.session_state.get("bootega_status") == "Completed"
+    uva_completed = st.session_state.get("uva_status") == "Completed"
+
+    if bootega_completed:
+        st.success("✅ Full pipeline completed! All export options are available.")
+
+        # Create download columns
+        col_csv1, col_csv2, col_csv3 = st.columns(3)
+
+        with col_csv1:
+            st.subheader("📊 Final Items CSV")
+            st.caption("Complete dataset with stable items, communities, and metadata")
+
+            try:
+                final_items_df = generate_final_items_csv()
+                if not final_items_df.empty:
+                    # Show preview
+                    st.dataframe(final_items_df.head(3), use_container_width=True)
+                    st.caption(f"Preview: {len(final_items_df)} total items")
+                    
+                    # Download button
+                    csv_final = final_items_df.to_csv(index=False).encode('utf-8')
+                    st.download_button(
+                        label="📥 Download Final Items CSV",
+                        data=csv_final,
+                        file_name=f"final_items_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.csv",
+                        mime="text/csv",
+                        key="download_final_items"
+                    )
+                else:
+                    st.warning("No stable items to export.")
+            except Exception as e:
+                st.error(f"Error generating final items CSV: {e}")
+
+        with col_csv2:
+            st.subheader("📈 Analysis Summary CSV")
+            st.caption("Pipeline metrics, parameters, and key statistics")
+
+            try:
+                summary_df = generate_analysis_summary_csv()
+                if not summary_df.empty:
+                    # Show preview
+                    st.dataframe(summary_df.head(5), use_container_width=True)
+                    st.caption(f"{len(summary_df)} metrics included")
+
+                    # Download button
+                    csv_summary = summary_df.to_csv(index=False).encode('utf-8')
+                    st.download_button(
+                        label="📥 Download Summary CSV",
+                        data=csv_summary,
+                        file_name=f"analysis_summary_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.csv",
+                        mime="text/csv",
+                        key="download_summary"
+                    )
+                else:
+                    st.warning("No summary data to export.")
+            except Exception as e:
+                st.error(f"Error generating summary CSV: {e}")
+
+        with col_csv3:
+            st.subheader("🗑️ Removed Items CSV")
+            st.caption("Items filtered during UVA and bootEGA with reasons")
+            
+            try:
+                removed_df = generate_removed_items_csv()
+                if not removed_df.empty:
+                    # Show preview
+                    st.dataframe(removed_df.head(3), use_container_width=True)
+                    st.caption(f"{len(removed_df)} removed items")
+
+                    # Download button
+                    csv_removed = removed_df.to_csv(index=False).encode('utf-8')
+                    st.download_button(
+                        label="📥 Download Removed Items CSV",
+                        data=csv_removed,
+                        file_name=f"removed_items_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.csv",
+                        mime="text/csv",
+                        key="download_removed"
+                    )
+                else:
+                    st.info("No items were removed during the analysis.")
+            except Exception as e:
+                st.error(f"Error generating removed items CSV: {e}")
+
+        # Future PDF export placeholder
+        st.divider()
+        st.subheader("📄 PDF Report")
+        st.info("PDF report functionality will be available in Phase 6.2 (coming soon).")
+
+    elif uva_completed:
+        st.info("UVA analysis completed. Run bootEGA (Section 8) to enable full export functionality.")
+        st.caption("Limited export options available:")
+
+        # Offer basic CSV for UVA results only
+        try:
+            uva_items = st.session_state.get("uva_final_items", [])
+            if uva_items:
+                confirmed_items = st.session_state.get("previous_items", [])
+                basic_data = []
+                for i, item_label in enumerate(uva_items):
+                    actual_text = get_item_text_from_label(item_label, confirmed_items)
+                    basic_data.append({
+                        'Item_ID': i + 1,
+                        'Item_Text': actual_text,
+                        'Original_Item_Label': item_label,
+                        'Stage': 'Post-UVA',
+                        'Timestamp': pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')
+                    })
+
+                basic_df = pd.DataFrame(basic_data)
+                csv_basic = basic_df.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    label="📥 Download UVA Results CSV",
+                    data=csv_basic,
+                    file_name=f"uva_results_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.csv",
+                    mime="text/csv",
+                    key="download_uva_basic"
+                )
+        except Exception as e:
+            st.error(f"Error generating UVA CSV: {e}")
+
     else:
-        st.info("Complete the analysis pipeline (at least through UVA) to enable export.")
+        st.info("Complete the analysis pipeline (at least through UVA) to enable export functionality.")
+        st.caption("Available after Section 7 (UVA) or Section 8 (bootEGA)")
 
 
 # ==============================================
@@ -1447,6 +1638,189 @@ def generate_items(
         st.error(f"An error occurred during item generation: {e}")
         st.error(traceback.format_exc()) # Print full traceback for debugging
         return []
+
+
+# ==============================================
+# CSV Export Functions
+# ==============================================
+
+def generate_final_items_csv() -> pd.DataFrame:
+    """Generates the final items CSV dataset with all relevant metadata.
+
+    Returns:
+        DataFrame with final stable items and their characteristics.
+    """
+    # Get final stable items and their data
+    stable_items = st.session_state.get("bootega_stable_items", [])
+    stability_scores = st.session_state.get("bootega_final_stability_scores", {}) or {}
+    final_communities = st.session_state.get("bootega_final_community_membership", {}) or {}
+    confirmed_items = st.session_state.get("previous_items", []) or []
+    uva_items = st.session_state.get("uva_final_items", []) or []
+
+    if not stable_items:
+        return pd.DataFrame()  # Return empty DataFrame if no stable items
+
+    # Get configuration info
+    network_method = st.session_state.get("network_method_select", "Unknown")
+    input_matrix = st.session_state.get("input_matrix_select", "Unknown")
+    embedding_method = "Dense" if input_matrix == "Dense Embeddings" else "Sparse_TFIDF"
+
+    # Build the dataset
+    csv_data = []
+    for i, item_label in enumerate(stable_items):
+        # Get actual item text
+        actual_text = get_item_text_from_label(item_label, confirmed_items)
+        
+        # Get community info (with null safety)
+        community_id = final_communities.get(item_label, -1) if final_communities else -1
+        
+        # Calculate community size (with null safety)
+        if final_communities and community_id != -1:
+            community_size = sum(1 for comm in final_communities.values() if comm == community_id)
+        else:
+            community_size = 1
+
+        # Get stability score (with null safety)
+        stability = stability_scores.get(item_label, np.nan) if stability_scores else np.nan
+
+        # Determine retention status
+        uva_retained = item_label in uva_items if uva_items else True
+        bootega_retained = True  # By definition, if it's in stable_items
+
+        # Get original generation order (extract from Item X label)
+        try:
+            match = re.search(r'Item (\d+)', item_label)
+            generation_order = int(match.group(1)) if match else i + 1
+        except (ValueError, AttributeError):
+            generation_order = i + 1
+
+        csv_data.append({
+            'Item_ID': i + 1,
+            'Item_Text': actual_text,
+            'Original_Item_Label': item_label,
+            'Community_ID': community_id,
+            'Community_Size': community_size,
+            'Stability_Score': round(stability, 4) if not pd.isna(stability) else np.nan,
+            'UVA_Retained': uva_retained,
+            'bootEGA_Retained': bootega_retained,
+            'Generation_Order': generation_order,
+            'Embedding_Method': embedding_method,
+            'Network_Method': network_method,
+            'Analysis_Timestamp': pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')
+        })
+
+    return pd.DataFrame(csv_data)
+
+
+def generate_analysis_summary_csv() -> pd.DataFrame:
+    """Generates the analysis summary CSV with pipeline metrics and parameters.
+
+    Returns:
+        DataFrame with key analysis metrics and configuration parameters.
+    """
+    # Get metrics
+    initial_nmi = st.session_state.get("bootega_initial_nmi_compared", np.nan)
+    final_nmi = st.session_state.get("bootega_final_nmi", np.nan)
+
+    # Get TEFI (need to find the correct key based on current settings)
+    network_method = st.session_state.get("network_method_select", "TMFG")
+    input_matrix = st.session_state.get("input_matrix_select", "Dense Embeddings")
+    matrix_suffix = "dense" if input_matrix == "Dense Embeddings" else "sparse"
+    method_prefix = "tmfg" if network_method == "TMFG" else "glasso"
+    tefi_key = f"tefi_{method_prefix}_{matrix_suffix}"
+    tefi_score = st.session_state.get(tefi_key, np.nan)
+
+    # Get community info
+    final_communities = st.session_state.get("bootega_final_community_membership", {})
+    num_communities = len(set(c for c in final_communities.values() if c != -1)) if final_communities else 0
+
+    # Count items at each stage
+    initial_count = len(st.session_state.get("previous_items", []))
+    uva_count = len(st.session_state.get("uva_final_items", []))
+    final_count = len(st.session_state.get("bootega_stable_items", []))
+
+    # Get parameters
+    uva_threshold = st.session_state.get("uva_threshold", np.nan)
+    bootega_n_bootstraps = st.session_state.get("bootega_n_bootstraps", np.nan)
+    bootega_stability_threshold = st.session_state.get("bootega_stability_threshold", np.nan)
+
+    # Calculate average stability
+    stability_scores = st.session_state.get("bootega_final_stability_scores", {})
+    avg_stability = np.mean(list(stability_scores.values())) if stability_scores else np.nan
+
+    summary_data = {
+        'Metric': [
+            'Initial_Item_Count', 'Post_UVA_Count', 'Final_Stable_Count',
+            'Items_Removed_UVA', 'Items_Removed_bootEGA',
+            'TEFI_Score', 'NMI_Initial', 'NMI_Final', 'NMI_Improvement',
+            'Final_Communities', 'Average_Stability_Score',
+            'Network_Method', 'Embedding_Method', 'UVA_Threshold',
+            'bootEGA_Bootstrap_Samples', 'bootEGA_Stability_Threshold',
+            'Analysis_Timestamp', 'Focus_Area'
+        ],
+        'Value': [
+            initial_count, uva_count, final_count,
+            initial_count - uva_count, uva_count - final_count,
+            round(tefi_score, 4) if not pd.isna(tefi_score) else np.nan,
+            round(initial_nmi, 4) if not pd.isna(initial_nmi) else np.nan,
+            round(final_nmi, 4) if not pd.isna(final_nmi) else np.nan,
+            round(final_nmi - initial_nmi, 4) if not pd.isna(final_nmi) and not pd.isna(initial_nmi) else np.nan,
+            num_communities,
+            round(avg_stability, 4) if not pd.isna(avg_stability) else np.nan,
+            network_method,
+            "Dense" if input_matrix == "Dense Embeddings" else "Sparse_TFIDF",
+            round(uva_threshold, 4) if not pd.isna(uva_threshold) else np.nan,
+            int(bootega_n_bootstraps) if not pd.isna(bootega_n_bootstraps) else np.nan,
+            round(bootega_stability_threshold, 4) if not pd.isna(bootega_stability_threshold) else np.nan,
+            pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S'),
+            st.session_state.get("focus_area_selectbox", "Unknown")
+        ]
+    }
+
+    return pd.DataFrame(summary_data)
+
+
+def generate_removed_items_csv() -> pd.DataFrame:
+    """Generates the removed items CSV with details on all filtered items.
+
+    Returns:
+        DataFrame with removed items from both UVA and bootEGA stages.
+    """
+    removed_data = []
+    confirmed_items = st.session_state.get("previous_items", [])
+
+    # Add UVA removed items
+    uva_removed = st.session_state.get("uva_removed_log", [])
+    if uva_removed:
+        for item_label, wto_score in uva_removed:
+            actual_text = get_item_text_from_label(item_label, confirmed_items)
+            removed_data.append({
+                'Item_Text': actual_text,
+                'Original_Item_Label': item_label,
+                'Removal_Stage': 'UVA',
+                'Removal_Reason': f'wTO >= {st.session_state.get("uva_threshold", 0.20):.2f}',
+                'Score': round(wto_score, 4),
+                'Iteration': 1,  # UVA is iterative, but we don't track which iteration
+                'Timestamp': pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')
+            })
+
+    # Add bootEGA removed items
+    bootega_removed = st.session_state.get("bootega_removed_log", [])
+    if bootega_removed:
+        stability_threshold = st.session_state.get("bootega_stability_threshold", 0.75)
+        for item_label, stability_score, iteration in bootega_removed:
+            actual_text = get_item_text_from_label(item_label, confirmed_items)
+            removed_data.append({
+                'Item_Text': actual_text,
+                'Original_Item_Label': item_label,
+                'Removal_Stage': 'bootEGA',
+                'Removal_Reason': f'Stability < {stability_threshold:.2f}',
+                'Score': round(stability_score, 4),
+                'Iteration': iteration,
+                'Timestamp': pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')
+            })
+
+    return pd.DataFrame(removed_data)
 
 
 # ==============================================
