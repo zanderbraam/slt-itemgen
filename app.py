@@ -1456,6 +1456,60 @@ def main():
         st.caption("Available after Section 7 (UVA) or Section 8 (bootEGA)")
 
 
+    # ==============================================
+    # Reset Analysis Button
+    # ==============================================
+    st.divider()
+    st.subheader("🔄 Reset Analysis")
+    
+    col_reset1, col_reset2 = st.columns([3, 1])
+    with col_reset1:
+        st.caption("Clear all data and start a completely fresh analysis from the beginning.")
+    with col_reset2:
+        if st.button("🗑️ Reset Analysis", type="secondary", help="Clear all data and start over from scratch"):
+            # Show confirmation dialog using session state
+            st.session_state.show_reset_confirmation = True
+            st.rerun()
+    
+    # Handle confirmation dialog
+    if st.session_state.get("show_reset_confirmation", False):
+        st.warning("⚠️ **Are you sure you want to reset the entire analysis?**")
+        st.write("This will permanently clear:")
+        st.write("• All generated items")
+        st.write("• All embeddings and similarity matrices") 
+        st.write("• All network graphs and community detections")
+        st.write("• All UVA and bootEGA results")
+        st.write("• All configuration settings")
+        
+        col_confirm1, col_confirm2, col_confirm3 = st.columns([1, 1, 2])
+        with col_confirm1:
+            if st.button("✅ Yes, Reset Everything", type="primary"):
+                # Reset all session state to initial values
+                reset_all_session_state()
+                st.success("✅ Analysis has been completely reset!")
+                st.rerun()
+        with col_confirm2:
+            if st.button("❌ Cancel", type="secondary"):
+                st.session_state.show_reset_confirmation = False
+                st.rerun()
+
+
+def reset_all_session_state():
+    """Completely reset all session state to initial values as if starting fresh."""
+    # Clear all existing keys except the confirmation flag
+    keys_to_preserve = {"show_reset_confirmation"}
+    keys_to_clear = [key for key in st.session_state.keys() if key not in keys_to_preserve]
+    
+    for key in keys_to_clear:
+        del st.session_state[key]
+    
+    # Also clear the confirmation flag
+    if "show_reset_confirmation" in st.session_state:
+        del st.session_state["show_reset_confirmation"]
+    
+    # The session state will be re-initialized when main() runs again
+
+
 # ==============================================
 # Helper Functions (moved below main for clarity)
 # ==============================================

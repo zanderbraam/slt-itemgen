@@ -385,3 +385,33 @@
 *   `LOG.md`: Documented issue and resolution
 
 This fix ensures the CSV export functionality works as intended, providing researchers with accurate community assignments for stable items after the full bootEGA pipeline.
+
+## [Date TBD] - Quality of Life Feature: Reset Analysis Button
+
+*   **Implemented global analysis reset functionality**:
+    *   Added a new "Reset Analysis" section at the bottom of the page (after Section 9: Export Results).
+    *   Created a prominent reset button with trash icon and clear descriptive text.
+    *   Implemented two-stage confirmation dialog to prevent accidental data loss.
+
+*   **User Experience Features**:
+    *   **Initial Button**: Shows "🗑️ Reset Analysis" button with help text explaining it clears all data.
+    *   **Confirmation Dialog**: When clicked, displays a warning with detailed list of what will be permanently cleared:
+        *   All generated items
+        *   All embeddings and similarity matrices
+        *   All network graphs and community detections
+        *   All UVA and bootEGA results
+        *   All configuration settings
+    *   **Final Confirmation**: Two buttons - "✅ Yes, Reset Everything" (primary) and "❌ Cancel" (secondary).
+
+*   **Technical Implementation**:
+    *   Added `reset_all_session_state()` function that completely clears all session state keys except temporary UI flags.
+    *   Uses `st.session_state.show_reset_confirmation` flag to manage the confirmation dialog state.
+    *   Properly handles state cleanup and page refresh with `st.rerun()`.
+    *   When confirmed, displays success message and automatically restarts the analysis from Section 1.
+
+*   **Safety Features**:
+    *   Requires explicit two-step confirmation to prevent accidental resets.
+    *   Clear warning messages explaining the irreversible nature of the action.
+    *   Visual differentiation between confirmation and cancellation buttons.
+
+*   **Benefits**: This feature allows users to quickly start over without having to manually clear individual sections or refresh the browser, improving workflow efficiency and user experience. Particularly useful during testing, experimentation, or when switching between different analysis configurations.
