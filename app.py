@@ -3,8 +3,7 @@ import toml
 import re
 import traceback
 import logging
-import time
-from pathlib import Path
+from enum import Enum
 
 import streamlit as st
 from openai import OpenAI, APIError
@@ -32,12 +31,35 @@ from src.ega_service import (
     calculate_nmi,
     remove_redundant_items_uva,
     perform_bootega_stability_analysis,
+    label_to_index,
     IGRAPH_AVAILABLE
+)
+from src.export import (
+    generate_final_items_csv,
+    generate_analysis_summary_csv,
+    generate_removed_items_csv,
+    get_item_text_from_label,
+    format_items_with_text
 )
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# Constants to replace magic strings
+class EmbeddingType(Enum):
+    DENSE = "Dense Embeddings"
+    SPARSE = "Sparse Embeddings (TF-IDF)"
+
+class NetworkMethod(Enum):
+    TMFG = "TMFG"
+    EBICGLASSO = "EBICglasso"
+
+# String constants for state keys
+DENSE_SUFFIX = "dense"
+SPARSE_SUFFIX = "sparse"
+TMFG_PREFIX = "tmfg"
+GLASSO_PREFIX = "glasso"
 
 # Setup joblib memory cache
 CACHE_DIR = "./.joblib_cache"
@@ -53,24 +75,11 @@ st.set_page_config(
     initial_sidebar_state="auto"
 )
 
-def label_to_index(label: str) -> int:
-    """
-    Convert 'Item N' → N-1.
-    Raise ValueError if the pattern is absent.
-
-    Args:
-        label: Item label like "Item 17"
-
-    Returns:
-        Zero-based index (e.g., "Item 17" → 16)
-
-    Raises:
-        ValueError: If label doesn't match the expected pattern
-    """
-    m = re.search(r'\bItem\s+(\d+)\b', label)
-    if not m:
-        raise ValueError(f"Cannot parse item label: {label!r}")
-    return int(m.group(1)) - 1
+def ss(key: str, default):
+    """Helper function to get or set session state values."""
+    if key not in st.session_state:
+        st.session_state[key] = default
+    return st.session_state[key]
 
 def load_local_secrets():
     """Load secrets from secrets.toml for local testing."""
@@ -257,78 +266,48 @@ def main():
         """)
 
     # --- Initialize Session State --- #
-    if "item_pool_text" not in st.session_state:
-        st.session_state.item_pool_text = ""
-    if "previous_items" not in st.session_state:
-        st.session_state.previous_items = [] # Holds the list of *confirmed* items
-    if "items_confirmed" not in st.session_state:
-        st.session_state.items_confirmed = False
+    ss("item_pool_text", "")
+    ss("previous_items", [])
+    ss("items_confirmed", False)
 
     # Embedding State
-    if "dense_embeddings" not in st.session_state:
-        st.session_state.dense_embeddings = None
-    if "sparse_embeddings_tfidf" not in st.session_state:
-        st.session_state.sparse_embeddings_tfidf = None
-    if "embedding_error" not in st.session_state:
-        st.session_state.embedding_error = None
+    ss("dense_embeddings", None)
+    ss("sparse_embeddings_tfidf", None)
+    ss("embedding_error", None)
 
     # Similarity Matrix State
-    if "similarity_matrix_dense" not in st.session_state:
-        st.session_state.similarity_matrix_dense = None
-    if "similarity_matrix_sparse" not in st.session_state:
-        st.session_state.similarity_matrix_sparse = None
-    if "similarity_error" not in st.session_state:
-        st.session_state.similarity_error = None
+    ss("similarity_matrix_dense", None)
+    ss("similarity_matrix_sparse", None)
+    ss("similarity_error", None)
 
     # EGA State (Graphs, Communities, Metrics) - Ensure keys are distinct
-    graph_types = ['tmfg', 'glasso']
-    input_types = ['dense', 'sparse']
-    for g_type in graph_types:
-        for i_type in input_types:
+    for g_type in ['tmfg', 'glasso']:
+        for i_type in ['dense', 'sparse']:
             key_prefix = f"{g_type}_{i_type}"
-            if f"graph_{key_prefix}" not in st.session_state:
-                st.session_state[f"graph_{key_prefix}"] = None
-            if f"community_membership_{key_prefix}" not in st.session_state:
-                st.session_state[f"community_membership_{key_prefix}"] = None
-            if f"community_clustering_{key_prefix}" not in st.session_state:
-                st.session_state[f"community_clustering_{key_prefix}"] = None
-            if f"tefi_{key_prefix}" not in st.session_state:
-                st.session_state[f"tefi_{key_prefix}"] = None
-            if f"nmi_{key_prefix}" not in st.session_state: # Placeholder NMI
-                st.session_state[f"nmi_{key_prefix}"] = None # Initialize NMI state
-            if f"ega_error_{key_prefix}" not in st.session_state:
-                st.session_state[f"ega_error_{key_prefix}"] = None
+            ss(f"graph_{key_prefix}", None)
+            ss(f"community_membership_{key_prefix}", None)
+            ss(f"community_clustering_{key_prefix}", None)
+            ss(f"tefi_{key_prefix}", None)
+            ss(f"nmi_{key_prefix}", None)
+            ss(f"ega_error_{key_prefix}", None)
 
-    if "show_network_labels" not in st.session_state:
-         st.session_state.show_network_labels = False # Default to hide labels
+    ss("show_network_labels", False)
 
     # UVA State
-    if "uva_final_items" not in st.session_state:
-        st.session_state.uva_final_items = None
-    if "uva_removed_log" not in st.session_state:
-        st.session_state.uva_removed_log = None
-    if "uva_error" not in st.session_state:
-        st.session_state.uva_error = None
-    if "uva_status" not in st.session_state:
-        st.session_state.uva_status = "Not Run"
+    ss("uva_final_items", None)
+    ss("uva_removed_log", None)
+    ss("uva_error", None)
+    ss("uva_status", "Not Run")
 
-    # bootEGA State (New)
-    if "bootega_stable_items" not in st.session_state:
-        st.session_state.bootega_stable_items = None
-    if "bootega_final_stability_scores" not in st.session_state:
-        st.session_state.bootega_final_stability_scores = None
-    if "bootega_removed_log" not in st.session_state:
-        st.session_state.bootega_removed_log = None
-    if "bootega_final_nmi" not in st.session_state:
-        st.session_state.bootega_final_nmi = None
-    if "bootega_initial_nmi_compared" not in st.session_state: # Store the initial NMI for comparison
-        st.session_state.bootega_initial_nmi_compared = None
-    if "bootega_error" not in st.session_state:
-        st.session_state.bootega_error = None
-    if "bootega_status" not in st.session_state:
-        st.session_state.bootega_status = "Not Run"
-    if "bootega_final_community_membership" not in st.session_state:
-         st.session_state.bootega_final_community_membership = None # Store final communities after bootEGA
+    # bootEGA State
+    ss("bootega_stable_items", None)
+    ss("bootega_final_stability_scores", None)
+    ss("bootega_removed_log", None)
+    ss("bootega_final_nmi", None)
+    ss("bootega_initial_nmi_compared", None)
+    ss("bootega_error", None)
+    ss("bootega_status", "Not Run")
+    ss("bootega_final_community_membership", None)
 
     # --- Helper Function for Clearing State ---
     def clear_downstream_state(from_section: int):
@@ -339,8 +318,8 @@ def main():
         if from_section <= 5: # Clear Similarity onwards
             keys_to_clear.extend(['similarity_matrix_dense', 'similarity_matrix_sparse', 'similarity_error'])
         if from_section <= 6: # Clear EGA onwards
-            for g_type in graph_types:
-                for i_type in input_types:
+            for g_type in ['tmfg', 'glasso']:
+                for i_type in ['dense', 'sparse']:
                     key_prefix = f"{g_type}_{i_type}"
                     keys_to_clear.extend([
                         f"graph_{key_prefix}",
@@ -352,28 +331,30 @@ def main():
                     ])
         if from_section <= 7: # Clear UVA onwards
              keys_to_clear.extend(['uva_final_items', 'uva_removed_log', 'uva_error', 'uva_status'])
-        if from_section <= 8: # Clear bootEGA onwards (New)
+        if from_section <= 8: # Clear bootEGA onwards
              keys_to_clear.extend([
                  'bootega_stable_items', 'bootega_final_stability_scores',
                  'bootega_removed_log', 'bootega_final_nmi',
                  'bootega_initial_nmi_compared', 'bootega_error', 'bootega_status',
                  'bootega_final_community_membership'
              ])
-        # Add future sections here (e.g., export)
 
+        # First, reset status and error flags BEFORE clearing data
         for key in keys_to_clear:
-            if key in st.session_state:
-                st.session_state[key] = None
-            # Reset status flags too
             if key.endswith("_status"):
-                 st.session_state[key] = "Not Run"
+                st.session_state[key] = "Not Run"
             elif key.endswith("_error"):
-                 st.session_state[key] = None
+                st.session_state[key] = None
+
+        # Then clear the data keys
+        for key in keys_to_clear:
+            if key in st.session_state and not key.endswith("_status") and not key.endswith("_error"):
+                st.session_state[key] = None
 
         # Special reset for confirmation flag if clearing from Section 3 or earlier
         if from_section <= 3:
             st.session_state.items_confirmed = False
-            st.session_state.item_pool_text = "" # Reset editor text too
+            st.session_state.item_pool_text = ""
             st.session_state.previous_items = []
 
     # --- Section 1: Select Focus and Parameters ---
@@ -645,21 +626,19 @@ def main():
         with col_net1:
             network_method = st.radio(
                 "Select Network Construction Method:",
-                ("TMFG", "EBICglasso"),
+                (NetworkMethod.TMFG.value, NetworkMethod.EBICGLASSO.value),
                 key="network_method_select",
-                # horizontal=True, # Keep vertical for clarity
             )
         with col_net2:
             input_matrix_type = st.radio(
                 "Select Input Similarity Matrix:",
-                ("Dense Embeddings", "Sparse Embeddings (TF-IDF)"),
+                (EmbeddingType.DENSE.value, EmbeddingType.SPARSE.value),
                 key="input_matrix_select",
-                # horizontal=True, # Keep vertical for clarity
             )
 
         # --- Determine state keys based on selections ---
-        matrix_suffix = "dense" if input_matrix_type == "Dense Embeddings" else "sparse"
-        method_prefix = "tmfg" if network_method == "TMFG" else "glasso"
+        matrix_suffix = DENSE_SUFFIX if input_matrix_type == EmbeddingType.DENSE.value else SPARSE_SUFFIX
+        method_prefix = TMFG_PREFIX if network_method == NetworkMethod.TMFG.value else GLASSO_PREFIX
 
         selected_sim_matrix = st.session_state.get(f"similarity_matrix_{matrix_suffix}")
         graph_state_key = f"graph_{method_prefix}_{matrix_suffix}"
@@ -692,7 +671,7 @@ def main():
                     st.error("Mismatch between number of items and similarity matrix dimension during construction.")
                     st.stop() # Prevent further execution in this run
 
-            if network_method == "TMFG":
+            if network_method == NetworkMethod.TMFG.value:
                 with st.spinner(f"Constructing TMFG network from {input_matrix_type} similarity..."):
                     try:
                         graph = construct_tmfg_network(
@@ -710,7 +689,7 @@ def main():
                     except Exception as e:
                         st.error(f"An unexpected error occurred during TMFG construction: {e}")
                         st.code(traceback.format_exc())
-            elif network_method == "EBICglasso":
+            elif network_method == NetworkMethod.EBICGLASSO.value:
                  with st.spinner(f"Constructing EBICglasso network from {input_matrix_type} similarity..."):
                     try:
                         graph = construct_ebicglasso_network(
@@ -772,7 +751,11 @@ def main():
 
             # --- Detect Communities Button ---
             st.caption("Use Walktrap algorithm to find communities within the constructed network.")
-            if st.button("Detect Communities", key="detect_communities_button"):
+            detect_button_disabled = not IGRAPH_AVAILABLE
+            if not IGRAPH_AVAILABLE:
+                st.warning("⚠️ Walktrap community detection requires python-igraph library. Please install it to enable this feature.")
+            
+            if st.button("Detect Communities", key="detect_communities_button", disabled=detect_button_disabled):
                  with st.spinner("Running Walktrap community detection..."):
                     try:
                         membership_dict, clustering_obj = detect_communities_walktrap(
@@ -1069,15 +1052,15 @@ def main():
             st.stop()
 
         # Determine embedding type and fetch from state
-        matrix_suffix = "dense" if input_matrix_type_info == "Dense Embeddings" else "sparse"
-        embedding_key = f"{matrix_suffix}_embeddings" if matrix_suffix == "dense" else f"{matrix_suffix}_embeddings_tfidf"
+        matrix_suffix = DENSE_SUFFIX if input_matrix_type_info == EmbeddingType.DENSE.value else SPARSE_SUFFIX
+        embedding_key = f"{matrix_suffix}_embeddings" if matrix_suffix == DENSE_SUFFIX else f"{matrix_suffix}_embeddings_tfidf"
         selected_embedding_for_bootega = st.session_state.get(embedding_key)
         if selected_embedding_for_bootega is None:
             st.error(f"Required embeddings ('{embedding_key}') not found in session state. Please run Section 4.")
             st.stop()
 
         # Determine method prefix and fetch original community membership using CORRECT key construction
-        method_prefix = "tmfg" if network_method_info == "TMFG" else "glasso"
+        method_prefix = TMFG_PREFIX if network_method_info == NetworkMethod.TMFG.value else GLASSO_PREFIX
         original_comm_key = f"community_membership_{method_prefix}_{matrix_suffix}"
         original_community_membership = st.session_state.get(original_comm_key)
         if original_community_membership is None:
@@ -1098,7 +1081,7 @@ def main():
         initial_nmi = st.session_state.get(initial_nmi_key, np.nan) # Get the NMI from section 6
 
         # Define Network/Walktrap Params
-        network_params = {"assume_centered": True} if method_prefix == "glasso" else {}
+        network_params = {"assume_centered": True} if method_prefix == GLASSO_PREFIX else {}
         walktrap_params = {"steps": 4}
 
         # Define Progress Callback for bootEGA - ENSURE this is defined
@@ -1127,7 +1110,7 @@ def main():
                 walktrap_params=walktrap_params,
                 stability_threshold=stability_threshold,
                 n_bootstrap=n_bootstraps,
-                sample_size=len(items_after_uva), # Sample size = number of items post-UVA
+                sample_size=selected_embedding_for_bootega.shape[0], # Use number of rows (cases) not items
                 use_parallel=use_parallel,
                 max_workers=os.cpu_count() if use_parallel else 1,
                 progress_callback=update_progress, # Pass the callback
@@ -1166,7 +1149,7 @@ def main():
                         final_similarity_matrix = calculate_similarity_matrix(stable_embeddings)
 
                         # 2. Reconstruct the network
-                        if method_prefix == "tmfg":
+                        if method_prefix == TMFG_PREFIX:
                             final_graph = construct_tmfg_network(final_similarity_matrix, item_labels=stable_items)
                         else: # ebicglasso
                             final_graph = construct_ebicglasso_network(
@@ -1504,49 +1487,6 @@ def parse_items_from_text(text_content: str) -> list[str]:
     return items
 
 
-def get_item_text_from_label(item_label: str, confirmed_items: list[str]) -> str:
-    """Maps an 'Item X' label back to the actual item text.
-    
-    Args:
-        item_label: Label in format 'Item X' where X is a number.
-        confirmed_items: List of actual item texts from st.session_state.previous_items.
-        
-    Returns:
-        The actual item text, or the original label if mapping fails.
-    """
-    try:
-        # Extract number from "Item X" format
-        match = re.search(r'Item (\d+)', item_label)
-        if match:
-            item_num = int(match.group(1))
-            # Convert to 0-based index
-            index = item_num - 1
-            if 0 <= index < len(confirmed_items):
-                return confirmed_items[index]
-    except (ValueError, IndexError):
-        pass
-    
-    # Return original label if mapping fails
-    return item_label
-
-
-def format_items_with_text(items: list[str], confirmed_items: list[str]) -> str:
-    """Formats a list of 'Item X' labels with actual item text for display.
-    
-    Args:
-        items: List of item labels in 'Item X' format.
-        confirmed_items: List of actual item texts.
-        
-    Returns:
-        Formatted string with numbered list showing actual item text.
-    """
-    formatted_lines = []
-    for i, item_label in enumerate(items):
-        actual_text = get_item_text_from_label(item_label, confirmed_items)
-        formatted_lines.append(f"{i+1}. {actual_text}")
-    return "\n".join(formatted_lines)
-
-
 def generate_items(
     prompt_focus: str,
     n: int,
@@ -1621,12 +1561,6 @@ def generate_items(
             {"role": "user", "content": user_prompt_instruction}
         ]
 
-        # Log the prompt for debugging if needed (optional)
-        # print("--- SYSTEM PROMPT ---")
-        # print(system_prompt)
-        # print("--- USER PROMPT ---")
-        # print(user_prompt_instruction)
-
         # 5. Call the OpenAI API
         response = client.chat.completions.create(
             model="gpt-4o",
@@ -1651,189 +1585,6 @@ def generate_items(
         st.error(f"An error occurred during item generation: {e}")
         st.error(traceback.format_exc()) # Print full traceback for debugging
         return []
-
-
-# ==============================================
-# CSV Export Functions
-# ==============================================
-
-def generate_final_items_csv() -> pd.DataFrame:
-    """Generates the final items CSV dataset with all relevant metadata.
-
-    Returns:
-        DataFrame with final stable items and their characteristics.
-    """
-    # Get final stable items and their data
-    stable_items = st.session_state.get("bootega_stable_items", [])
-    stability_scores = st.session_state.get("bootega_final_stability_scores", {}) or {}
-    final_communities = st.session_state.get("bootega_final_community_membership", {}) or {}
-    confirmed_items = st.session_state.get("previous_items", []) or []
-    uva_items = st.session_state.get("uva_final_items", []) or []
-
-    if not stable_items:
-        return pd.DataFrame()  # Return empty DataFrame if no stable items
-
-    # Get configuration info
-    network_method = st.session_state.get("network_method_select", "Unknown")
-    input_matrix = st.session_state.get("input_matrix_select", "Unknown")
-    embedding_method = "Dense" if input_matrix == "Dense Embeddings" else "Sparse_TFIDF"
-
-    # Build the dataset
-    csv_data = []
-    for i, item_label in enumerate(stable_items):
-        # Get actual item text
-        actual_text = get_item_text_from_label(item_label, confirmed_items)
-        
-        # Get community info (with null safety)
-        community_id = final_communities.get(item_label, -1) if final_communities else -1
-        
-        # Calculate community size (with null safety)
-        if final_communities and community_id != -1:
-            community_size = sum(1 for comm in final_communities.values() if comm == community_id)
-        else:
-            community_size = 1
-
-        # Get stability score (with null safety)
-        stability = stability_scores.get(item_label, np.nan) if stability_scores else np.nan
-
-        # Determine retention status
-        uva_retained = item_label in uva_items if uva_items else True
-        bootega_retained = True  # By definition, if it's in stable_items
-
-        # Get original generation order (extract from Item X label)
-        try:
-            match = re.search(r'Item (\d+)', item_label)
-            generation_order = int(match.group(1)) if match else i + 1
-        except (ValueError, AttributeError):
-            generation_order = i + 1
-
-        csv_data.append({
-            'Item_ID': i + 1,
-            'Item_Text': actual_text,
-            'Original_Item_Label': item_label,
-            'Community_ID': community_id,
-            'Community_Size': community_size,
-            'Stability_Score': round(stability, 4) if not pd.isna(stability) else np.nan,
-            'UVA_Retained': uva_retained,
-            'bootEGA_Retained': bootega_retained,
-            'Generation_Order': generation_order,
-            'Embedding_Method': embedding_method,
-            'Network_Method': network_method,
-            'Analysis_Timestamp': pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')
-        })
-
-    return pd.DataFrame(csv_data)
-
-
-def generate_analysis_summary_csv() -> pd.DataFrame:
-    """Generates the analysis summary CSV with pipeline metrics and parameters.
-
-    Returns:
-        DataFrame with key analysis metrics and configuration parameters.
-    """
-    # Get metrics
-    initial_nmi = st.session_state.get("bootega_initial_nmi_compared", np.nan)
-    final_nmi = st.session_state.get("bootega_final_nmi", np.nan)
-
-    # Get TEFI (need to find the correct key based on current settings)
-    network_method = st.session_state.get("network_method_select", "TMFG")
-    input_matrix = st.session_state.get("input_matrix_select", "Dense Embeddings")
-    matrix_suffix = "dense" if input_matrix == "Dense Embeddings" else "sparse"
-    method_prefix = "tmfg" if network_method == "TMFG" else "glasso"
-    tefi_key = f"tefi_{method_prefix}_{matrix_suffix}"
-    tefi_score = st.session_state.get(tefi_key, np.nan)
-
-    # Get community info
-    final_communities = st.session_state.get("bootega_final_community_membership", {})
-    num_communities = len(set(c for c in final_communities.values() if c != -1)) if final_communities else 0
-
-    # Count items at each stage
-    initial_count = len(st.session_state.get("previous_items", []))
-    uva_count = len(st.session_state.get("uva_final_items", []))
-    final_count = len(st.session_state.get("bootega_stable_items", []))
-
-    # Get parameters
-    uva_threshold = st.session_state.get("uva_threshold", np.nan)
-    bootega_n_bootstraps = st.session_state.get("bootega_n_bootstraps", np.nan)
-    bootega_stability_threshold = st.session_state.get("bootega_stability_threshold", np.nan)
-
-    # Calculate average stability
-    stability_scores = st.session_state.get("bootega_final_stability_scores", {})
-    avg_stability = np.mean(list(stability_scores.values())) if stability_scores else np.nan
-
-    summary_data = {
-        'Metric': [
-            'Initial_Item_Count', 'Post_UVA_Count', 'Final_Stable_Count',
-            'Items_Removed_UVA', 'Items_Removed_bootEGA',
-            'TEFI_Score', 'NMI_Initial', 'NMI_Final', 'NMI_Improvement',
-            'Final_Communities', 'Average_Stability_Score',
-            'Network_Method', 'Embedding_Method', 'UVA_Threshold',
-            'bootEGA_Bootstrap_Samples', 'bootEGA_Stability_Threshold',
-            'Analysis_Timestamp', 'Focus_Area'
-        ],
-        'Value': [
-            initial_count, uva_count, final_count,
-            initial_count - uva_count, uva_count - final_count,
-            round(tefi_score, 4) if not pd.isna(tefi_score) else np.nan,
-            round(initial_nmi, 4) if not pd.isna(initial_nmi) else np.nan,
-            round(final_nmi, 4) if not pd.isna(final_nmi) else np.nan,
-            round(final_nmi - initial_nmi, 4) if not pd.isna(final_nmi) and not pd.isna(initial_nmi) else np.nan,
-            num_communities,
-            round(avg_stability, 4) if not pd.isna(avg_stability) else np.nan,
-            network_method,
-            "Dense" if input_matrix == "Dense Embeddings" else "Sparse_TFIDF",
-            round(uva_threshold, 4) if not pd.isna(uva_threshold) else np.nan,
-            int(bootega_n_bootstraps) if not pd.isna(bootega_n_bootstraps) else np.nan,
-            round(bootega_stability_threshold, 4) if not pd.isna(bootega_stability_threshold) else np.nan,
-            pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S'),
-            st.session_state.get("focus_area_selectbox", "Unknown")
-        ]
-    }
-
-    return pd.DataFrame(summary_data)
-
-
-def generate_removed_items_csv() -> pd.DataFrame:
-    """Generates the removed items CSV with details on all filtered items.
-
-    Returns:
-        DataFrame with removed items from both UVA and bootEGA stages.
-    """
-    removed_data = []
-    confirmed_items = st.session_state.get("previous_items", [])
-
-    # Add UVA removed items
-    uva_removed = st.session_state.get("uva_removed_log", [])
-    if uva_removed:
-        for item_label, wto_score in uva_removed:
-            actual_text = get_item_text_from_label(item_label, confirmed_items)
-            removed_data.append({
-                'Item_Text': actual_text,
-                'Original_Item_Label': item_label,
-                'Removal_Stage': 'UVA',
-                'Removal_Reason': f'wTO >= {st.session_state.get("uva_threshold", 0.20):.2f}',
-                'Score': round(wto_score, 4),
-                'Iteration': 1,  # UVA is iterative, but we don't track which iteration
-                'Timestamp': pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')
-            })
-
-    # Add bootEGA removed items
-    bootega_removed = st.session_state.get("bootega_removed_log", [])
-    if bootega_removed:
-        stability_threshold = st.session_state.get("bootega_stability_threshold", 0.75)
-        for item_label, stability_score, iteration in bootega_removed:
-            actual_text = get_item_text_from_label(item_label, confirmed_items)
-            removed_data.append({
-                'Item_Text': actual_text,
-                'Original_Item_Label': item_label,
-                'Removal_Stage': 'bootEGA',
-                'Removal_Reason': f'Stability < {stability_threshold:.2f}',
-                'Score': round(stability_score, 4),
-                'Iteration': iteration,
-                'Timestamp': pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')
-            })
-
-    return pd.DataFrame(removed_data)
 
 
 # ==============================================

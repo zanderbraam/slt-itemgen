@@ -166,4 +166,4 @@ if __name__ == "__main__":
         print("Please install scikit-learn: pip install scikit-learn scipy")
     except Exception as e:
         print(f"An error occurred in the sparse embedding example: {e}")
-        traceback.print_exc() 
+        traceback.print_exc()

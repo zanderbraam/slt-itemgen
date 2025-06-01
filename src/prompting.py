@@ -213,4 +213,4 @@ def filter_unique_items(items: list[str], previous_items: list[str]) -> list[str
         if item not in seen_items:
             new_unique_items.append(item)
             seen_items.add(item) # Add to seen immediately to handle duplicates within the new list
-    return new_unique_items 
+    return new_unique_items
